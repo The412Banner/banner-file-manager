@@ -201,6 +201,91 @@ static void extractAllISOFiles(void* handle, bool isCDImage, char* srcPath, wcha
     iso9660_filelist_free(isoFileList);
 }
 
+// ---- Banner File Manager: native copy/move/delete (replaces shell32 SHFileOperation) ----
+// Wine's shell32 SHFileOperation copy/move/delete crashes under Proton 10.0-4. WFM already
+// tracks its own clipboard of source paths + a destination dir, so we don't need shell
+// semantics — implement the operations directly on Win32 file APIs to sidestep shell32.
+
+static bool bfmDeletePath(const wchar_t* path);
+static bool bfmCopyPath(const wchar_t* src, const wchar_t* dst);
+
+static bool bfmDeleteDirectory(const wchar_t* dir) {
+    wchar_t pattern[MAX_PATH] = {0};
+    swprintf_s(pattern, MAX_PATH, L"%ls\\*", dir);
+
+    WIN32_FIND_DATAW wfd = {0};
+    HANDLE h = FindFirstFileW(pattern, &wfd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(wfd.cFileName, L".") == 0 || wcscmp(wfd.cFileName, L"..") == 0) continue;
+            wchar_t child[MAX_PATH] = {0};
+            swprintf_s(child, MAX_PATH, L"%ls\\%ls", dir, wfd.cFileName);
+            bfmDeletePath(child);
+        }
+        while (FindNextFileW(h, &wfd));
+        FindClose(h);
+    }
+
+    SetFileAttributesW(dir, FILE_ATTRIBUTE_NORMAL);
+    return RemoveDirectoryW(dir);
+}
+
+static bool bfmDeletePath(const wchar_t* path) {
+    DWORD attr = GetFileAttributesW(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) return false;
+    if (attr & FILE_ATTRIBUTE_DIRECTORY) return bfmDeleteDirectory(path);
+
+    SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
+    return DeleteFileW(path);
+}
+
+static bool bfmCopyDirectory(const wchar_t* src, const wchar_t* dst) {
+    if (!CreateDirectoryW(dst, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
+
+    wchar_t pattern[MAX_PATH] = {0};
+    swprintf_s(pattern, MAX_PATH, L"%ls\\*", src);
+
+    WIN32_FIND_DATAW wfd = {0};
+    HANDLE h = FindFirstFileW(pattern, &wfd);
+    bool ok = true;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(wfd.cFileName, L".") == 0 || wcscmp(wfd.cFileName, L"..") == 0) continue;
+            wchar_t s[MAX_PATH] = {0}, d[MAX_PATH] = {0};
+            swprintf_s(s, MAX_PATH, L"%ls\\%ls", src, wfd.cFileName);
+            swprintf_s(d, MAX_PATH, L"%ls\\%ls", dst, wfd.cFileName);
+            if (!bfmCopyPath(s, d)) ok = false;
+        }
+        while (FindNextFileW(h, &wfd));
+        FindClose(h);
+    }
+    return ok;
+}
+
+static bool bfmCopyPath(const wchar_t* src, const wchar_t* dst) {
+    DWORD attr = GetFileAttributesW(src);
+    if (attr == INVALID_FILE_ATTRIBUTES) return false;
+    if (attr & FILE_ATTRIBUTE_DIRECTORY) return bfmCopyDirectory(src, dst);
+
+    return CopyFileW(src, dst, FALSE); // FALSE = overwrite existing
+}
+
+static bool bfmMovePath(const wchar_t* src, const wchar_t* dst) {
+    // Fast path: same-volume rename handles both files and whole dir trees.
+    if (MoveFileExW(src, dst, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING)) return true;
+    // Fallback (cross-volume dirs, or dst dir exists): copy tree then delete source.
+    if (!bfmCopyPath(src, dst)) return false;
+    return bfmDeletePath(src);
+}
+
+// Destination for a copied/moved item = dstDir\basename(src), matching shell32's
+// "copy INTO the target directory" behavior that SHFileOperation(pTo=dir) gave us.
+static void bfmJoinDest(const wchar_t* dstDir, const wchar_t* src, wchar_t* out) {
+    const wchar_t* base = wcsrchr(src, L'\\');
+    base = base ? base + 1 : src;
+    swprintf_s(out, MAX_PATH, L"%ls\\%ls", dstDir, base);
+}
+
 static DWORD WINAPI fileActionTask(void* param) {
     struct ActionData* actionData = (struct ActionData*)param;
     
@@ -227,27 +312,20 @@ static DWORD WINAPI fileActionTask(void* param) {
         DWORD lastTime = GetTickCount();
             
         for (int i = 0; i < actionData->numSrcPaths && !actionData->cancel; i++) {  
+            wchar_t* src = actionData->srcPaths[i];
             if (actionData->action == ACTION_DELETE) {
-                SHFILEOPSTRUCT sfo = {0};
-                sfo.hwnd = hwndDlg;
-                sfo.wFunc = FO_DELETE;
-                sfo.fFlags = FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI;
-                sfo.pTo = NULL;
-                sfo.pFrom = actionData->srcPaths[i];
-                
-                int res = SHFileOperation(&sfo);
-                if (res != 0) break;
+                if (!bfmDeletePath(src)) break;
             }
             else if (actionData->action == ACTION_COPY || actionData->action == ACTION_MOVE) {
-                SHFILEOPSTRUCT sfo = {0};
-                sfo.hwnd = hwndDlg;
-                sfo.wFunc = actionData->action == ACTION_COPY ? FO_COPY : FO_MOVE;
-                sfo.fFlags = FOF_SILENT;
-                sfo.pTo = actionData->dstPath;
-                sfo.pFrom = actionData->srcPaths[i];
+                wchar_t dst[MAX_PATH] = {0};
+                bfmJoinDest(actionData->dstPath, src, dst);
 
-                int res = SHFileOperation(&sfo);
-                if (res != 0) break;            
+                // Paste into the same directory is a no-op here (shell made a "Copy of"); just skip.
+                if (_wcsicmp(src, dst) == 0) continue;
+
+                bool ok = (actionData->action == ACTION_COPY) ? bfmCopyPath(src, dst)
+                                                              : bfmMovePath(src, dst);
+                if (!ok) break;
             }
 
             DWORD currTime = GetTickCount();

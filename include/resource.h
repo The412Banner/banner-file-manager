@@ -46,9 +46,9 @@
 #define IDC_STATIC -1
 #endif
 
-#define APP_NAME L"Winlator File Manager"
-#define APP_VERSION L"1.5"
-#define APP_DEV_NAME L"BrunoSX"
+#define APP_NAME L"Banner File Manager"
+#define APP_VERSION L"1.5-banner1"
+#define APP_DEV_NAME L"The412Banner (based on WFM by BrunoSX)"
 
 #ifndef RESOURCE_H
 #define RESOURCE_H

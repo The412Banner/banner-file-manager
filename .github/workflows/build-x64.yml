@@ -1,0 +1,52 @@
+name: Build Banner File Manager (x64)
+
+# Phase 1: minimal x64 cut. Produces a universal wfm.exe (x86-64 PE) that runs in BOTH
+# Bannerlator container arches — natively under Box64 in x86-64 containers, and via
+# wowbox64 in arm64ec containers. arm64ec-native build is a later phase.
+
+on:
+  push:
+    branches: [ main, "feat/**" ]
+  workflow_dispatch:
+
+jobs:
+  build-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mingw-w64 (x86-64) toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+
+      - name: Build wfm.exe (x86-64)
+        run: |
+          set -euxo pipefail
+          CC=x86_64-w64-mingw32-gcc
+          RC=x86_64-w64-mingw32-windres
+          INCLUDES="-I./include -I./include/libcdio"
+          CFLAGS="-O2 -std=c99 -DUNICODE -D_UNICODE -DCOBJMACROS -DWINVER=0x0600 -Wall"
+          SRCS="main content_view toolbar navbar treeview sizebar statusbar file_node file_actions input_dialog"
+
+          mkdir -p obj
+          for f in $SRCS; do
+            $CC $CFLAGS $INCLUDES -c "src/$f.c" -o "obj/$f.o"
+          done
+
+          # Resources (icons + manifest); needs both ./include (resource.h) and ./res (icons).
+          $RC $INCLUDES -I./res -i res/resource.rc -o obj/resource.o
+
+          # Link against the bundled x64 libcdio.dll (ISO-mount support), like upstream.
+          $CC -o wfm.exe obj/*.o -s -lcomctl32 -lgdi32 -lole32 -luuid ./libcdio.dll -Wl,--subsystem,windows
+
+          file wfm.exe
+          ls -l wfm.exe libcdio.dll
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: banner-file-manager-x64
+          path: |
+            wfm.exe
+            libcdio.dll
