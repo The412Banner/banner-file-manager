@@ -58,7 +58,7 @@
 #endif
 
 #define APP_NAME L"Banner File Manager"
-#define APP_VERSION L"1.5-banner1"
+#define APP_VERSION L"1.0.0"
 #define APP_DEV_NAME L"The412Banner (based on WFM by BrunoSX)"
 
 #ifndef RESOURCE_H
