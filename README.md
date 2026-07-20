@@ -97,10 +97,17 @@ $CC -o wfm.exe obj/*.o -s -lcomctl32 -lgdi32 -lole32 -luuid -luxtheme ./libcdio.
 `wfm.exe` + `libcdio.dll` as a build artifact. `libcdio.dll` must sit next to `wfm.exe`
 (it provides ISO-mount support).
 
-## Credits & license
+## License
 
-- Original **Winlator File Manager** © 2023 **BrunoSX** — MIT.
-- Banner File Manager modifications © 2026 **The412Banner** — MIT.
+Banner File Manager is licensed under the **GNU General Public License v3.0 or later**
+(GPL-3.0-or-later) — see [`LICENSE`](LICENSE).
+Copyright © 2026 The412Banner.
 
-Distributed under the MIT License; see [`LICENSE`](LICENSE). Both copyright notices are
-preserved as required.
+- It incorporates code from the **Winlator File Manager** © 2023 **BrunoSX**, originally
+  under the MIT License. That code remains under MIT; its notice is preserved in
+  [`LICENSE.WFM`](LICENSE.WFM). MIT-licensed code may be incorporated into a GPL work.
+- It bundles and links **`libcdio`** (for ISO/BIN/CUE mounting), which is itself
+  **GPL-3.0-or-later**. Because the distributed `wfm.exe` links libcdio, the combined
+  binary is governed by the GPL — which is why the project as a whole is GPL-licensed.
+
+Credits: **BrunoSX** (original WFM) and the **libcdio** authors.
