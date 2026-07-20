@@ -43,6 +43,15 @@ static HBRUSH getSearchBgBrush() {
     return searchBgBrush;
 }
 
+// Dark backgrounds for the owner-drawn navbar buttons (breadcrumb, go, refresh, search).
+static HBRUSH navBtnBrush = NULL;
+static HBRUSH navBtnBrushPressed = NULL;
+static HBRUSH getNavBtnBrush(bool pressed) {
+    if (!navBtnBrush) navBtnBrush = CreateSolidBrush(RGB(45, 45, 45));
+    if (!navBtnBrushPressed) navBtnBrushPressed = CreateSolidBrush(RGB(70, 70, 70));
+    return pressed ? navBtnBrushPressed : navBtnBrush;
+}
+
 static void createMorePopupMenu(struct FileNode* parent) {  
     HMENU menu = CreatePopupMenu();
 
@@ -131,12 +140,41 @@ LRESULT CALLBACK NavbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         case WM_CTLCOLORSTATIC: {
             HWND hwndControl = (HWND)lParam;
             if (hwndControl == hwndAddrEditWrapper) {
-                return (LRESULT)(isEditMode ? GetSysColorBrush(COLOR_WINDOW) : GetSysColorBrush(COLOR_BTNFACE));
+                return (LRESULT)(isEditMode ? getSearchBgBrush() : getNavBtnBrush(false));
             }
             else if (hwndControl == hwndSearchEditWrapper) {
                 return (LRESULT)getSearchBgBrush();
             }
             break;
+        }
+        case WM_DRAWITEM: {
+            DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
+            if (dis->CtlType != ODT_BUTTON) break;
+
+            HDC hdc = dis->hDC;
+            RECT rc = dis->rcItem;
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            FillRect(hdc, &rc, getNavBtnBrush(pressed));
+
+            HICON ic = (HICON)SendMessage(dis->hwndItem, BM_GETIMAGE, IMAGE_ICON, 0);
+            if (ic) {
+                int x = rc.left + (rc.right - rc.left - 16) / 2;
+                int y = rc.top + (rc.bottom - rc.top - 16) / 2;
+                DrawIconEx(hdc, x, y, ic, 16, 16, 0, NULL, DI_NORMAL);
+            }
+            else {
+                wchar_t text[128] = {0};
+                GetWindowText(dis->hwndItem, text, 128);
+                HGDIOBJ of = SelectObject(hdc, getUIFont());
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, RGB(230, 230, 230));
+                RECT tr = rc;
+                tr.left += 6;
+                tr.right -= 4;
+                DrawText(hdc, text, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                SelectObject(hdc, of);
+            }
+            return TRUE;
         }
         case WM_SIZE: {
             RECT rect;
@@ -280,7 +318,7 @@ static struct AddrButton* addAddrButton() {
     int index = numAddrButtons++;
     addrButtons = realloc(addrButtons, numAddrButtons * sizeof(struct AddrButton));
     struct AddrButton* button = &addrButtons[index];
-    button->hwnd = CreateWindowEx(0, WC_BUTTON, NULL, WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, hwndNavbar, (HMENU)NULL, globalHInstance, NULL);
+    button->hwnd = CreateWindowEx(0, WC_BUTTON, NULL, WS_CHILD | WS_CLIPSIBLINGS | BS_OWNERDRAW, 0, 0, 0, 0, hwndNavbar, (HMENU)NULL, globalHInstance, NULL);
     button->isArrow = false;
     SendMessage(button->hwnd, WM_SETFONT, (WPARAM)getUIFont(), 0);
     return button;
@@ -353,19 +391,19 @@ void updateAddrButtons() {
 }
 
 static void createNavButtons() {
-    hwndGoButton = CreateWindowEx(0, WC_BUTTON, NULL, WS_VISIBLE | WS_CHILD | BS_ICON, 
+    hwndGoButton = CreateWindowEx(0, WC_BUTTON, NULL, WS_VISIBLE | WS_CHILD | BS_ICON | BS_OWNERDRAW, 
                                   0, 0, buttonSize, buttonSize, hwndNavbar, NULL, globalHInstance, NULL);
     HICON hiGo = (HICON)LoadImage(globalHInstance, MAKEINTRESOURCE(IDI_GO), IMAGE_ICON, 16, 16, 0);
     SendMessage(hwndGoButton, BM_SETIMAGE, IMAGE_ICON, (LPARAM)hiGo);
     SetWindowPos(hwndGoButton, NULL, 0, 0, buttonSize, buttonSize, SWP_NOZORDER | SWP_NOMOVE);
     
-    hwndRefreshButton = CreateWindowEx(0, WC_BUTTON, NULL, WS_VISIBLE | WS_CHILD | BS_ICON, 
+    hwndRefreshButton = CreateWindowEx(0, WC_BUTTON, NULL, WS_VISIBLE | WS_CHILD | BS_ICON | BS_OWNERDRAW, 
                                        0, 0, buttonSize, buttonSize, hwndNavbar, NULL, globalHInstance, NULL);
     HICON hiRefresh = (HICON)LoadImage(globalHInstance, MAKEINTRESOURCE(IDI_REFRESH), IMAGE_ICON, 16, 16, 0);
     SendMessage(hwndRefreshButton, BM_SETIMAGE, IMAGE_ICON, (LPARAM)hiRefresh);
     SetWindowPos(hwndRefreshButton, NULL, 0, 0, buttonSize, buttonSize, SWP_NOZORDER | SWP_NOMOVE);
     
-    hwndSearchButton = CreateWindowEx(0, WC_BUTTON, NULL, WS_VISIBLE | WS_CHILD | BS_ICON, 
+    hwndSearchButton = CreateWindowEx(0, WC_BUTTON, NULL, WS_VISIBLE | WS_CHILD | BS_ICON | BS_OWNERDRAW, 
                                       0, 0, buttonSize, buttonSize, hwndNavbar, NULL, globalHInstance, NULL);
     HICON hiSearch = (HICON)LoadImage(globalHInstance, MAKEINTRESOURCE(IDI_SEARCH), IMAGE_ICON, 16, 16, 0);
     SendMessage(hwndSearchButton, BM_SETIMAGE, IMAGE_ICON, (LPARAM)hiSearch);
