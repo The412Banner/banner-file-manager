@@ -10,7 +10,17 @@ theme support.
 It ships on disk as `wfm.exe` (keeping the Bannerlator launch path unchanged) and is
 deployed into a container's `C:\windows\wfm.exe`.
 
-![Screenshot](screenshot.png)
+## Preview
+
+Runs inside a Bannerlator container and **honors the container's light and dark theme
+settings** — the whole UI (column header, status bar, search field, and address-bar
+buttons included) follows the active theme.
+
+| Single pane | Dual-pane split view | File actions |
+| :---: | :---: | :---: |
+| ![Single pane](docs/preview-single.jpg) | ![Dual-pane split view](docs/preview-split.jpg) | ![Context menu](docs/preview-menu.jpg) |
+
+<sub>Shown in dark mode; light mode is fully supported and matches the container theme.</sub>
 
 ## Features
 
