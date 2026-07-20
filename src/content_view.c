@@ -868,14 +868,14 @@ static LRESULT CALLBACK HeaderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         RECT rc;
         GetClientRect(hwnd, &rc);
 
-        HBRUSH bg = CreateSolidBrush(RGB(45, 45, 45));
+        HBRUSH bg = CreateSolidBrush(themeFaceBg());
         FillRect(hdc, &rc, bg);
         DeleteObject(bg);
 
         HGDIOBJ oldFont = SelectObject(hdc, getUIFont());
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(225, 225, 225));
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
+        SetTextColor(hdc, themeFaceText());
+        HPEN pen = CreatePen(PS_SOLID, 1, themeFaceLine());
         HGDIOBJ oldPen = SelectObject(hdc, pen);
 
         int count = (int)SendMessage(hwnd, HDM_GETITEMCOUNT, 0, 0);

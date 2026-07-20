@@ -67,5 +67,12 @@ void openFileNode(struct FileNode* node);
 void GetWindowRectInParent(HWND hwnd, RECT* rect);
 void resizeControls();
 HFONT getUIFont(void);
+bool isDarkMode(void);
+COLORREF themeFaceBg(void);
+COLORREF themeFaceText(void);
+COLORREF themeFaceLine(void);
+COLORREF themeFieldBg(void);
+COLORREF themeFieldText(void);
+COLORREF themePlaceholder(void);
 
 #endif

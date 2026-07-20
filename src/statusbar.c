@@ -17,13 +17,13 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         RECT rc;
         GetClientRect(hwnd, &rc);
 
-        HBRUSH bg = CreateSolidBrush(RGB(45, 45, 45));
+        HBRUSH bg = CreateSolidBrush(themeFaceBg());
         FillRect(hdc, &rc, bg);
         DeleteObject(bg);
 
         HGDIOBJ oldFont = SelectObject(hdc, getUIFont());
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(220, 220, 220));
+        SetTextColor(hdc, themeFaceText());
         RECT tr = rc;
         tr.left += 8;
         DrawText(hdc, statusText, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);

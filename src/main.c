@@ -20,10 +20,26 @@ static RECT paneCell[2] = {0};
 static HMENU hViewMenu = NULL;
 static HBRUSH paneLabelActiveBrush = NULL;
 static HBRUSH paneLabelInactiveBrush = NULL;
+static bool paneLabelInactiveDark = false;
 
 void cvInvalidatePaneFrames(void) {
     for (int i = 0; i < 2; i++) InvalidateRect(hwndMain, &paneCell[i], TRUE);
 }
+
+// Theme awareness: our owner-drawn controls (header, status bar, navbar buttons,
+// search box) must follow the container's light/dark theme instead of being hardcoded.
+// Dark is detected from the window background luminance; in light mode we defer to the
+// system colors so the controls match the rest of the (light) UI.
+bool isDarkMode(void) {
+    DWORD c = GetSysColor(COLOR_WINDOW);
+    return ((GetRValue(c) + GetGValue(c) + GetBValue(c)) / 3) < 128;
+}
+COLORREF themeFaceBg(void)    { return isDarkMode() ? RGB(45, 45, 45)    : GetSysColor(COLOR_BTNFACE); }
+COLORREF themeFaceText(void)  { return isDarkMode() ? RGB(225, 225, 225) : GetSysColor(COLOR_BTNTEXT); }
+COLORREF themeFaceLine(void)  { return isDarkMode() ? RGB(70, 70, 70)    : GetSysColor(COLOR_BTNSHADOW); }
+COLORREF themeFieldBg(void)   { return isDarkMode() ? RGB(45, 45, 45)    : GetSysColor(COLOR_WINDOW); }
+COLORREF themeFieldText(void) { return isDarkMode() ? RGB(230, 230, 230) : GetSysColor(COLOR_WINDOWTEXT); }
+COLORREF themePlaceholder(void){ return isDarkMode() ? RGB(150, 150, 150) : GetSysColor(COLOR_GRAYTEXT); }
 
 // Shared modern UI font (Segoe UI). Larger than the classic GUI font so rows are
 // taller and easier to hit on a touchscreen, and reads more like Windows 11.
@@ -189,28 +205,39 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             HDC hdc = BeginPaint(hwnd, &ps);
             if (cvSplitOn()) {
                 HBRUSH accent = CreateSolidBrush(RGB(0, 120, 215));
-                HBRUSH normal = GetSysColorBrush(COLOR_BTNFACE);
+                HBRUSH normal = CreateSolidBrush(themeFaceBg());
                 for (int i = 0; i < 2; i++) {
                     // Children are clipped (WS_CLIPCHILDREN), so this only paints the
                     // PANE_FRAME band around each list view.
                     FillRect(hdc, &paneCell[i], (i == cvActiveIdx()) ? accent : normal);
                 }
                 DeleteObject(accent);
+                DeleteObject(normal);
             }
             EndPaint(hwnd, &ps);
+            break;
+        }
+        case WM_SYSCOLORCHANGE: {
+            // Container theme switched (light <-> dark): repaint everything with new colors.
+            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
             break;
         }
         case WM_CTLCOLORSTATIC: {
             HWND ctl = (HWND)lParam;
             for (int i = 0; i < 2; i++) {
                 if (ctl == cvPaneLabel(i)) {
+                    bool dark = isDarkMode();
                     if (!paneLabelActiveBrush) paneLabelActiveBrush = CreateSolidBrush(RGB(0, 120, 215));
-                    if (!paneLabelInactiveBrush) paneLabelInactiveBrush = CreateSolidBrush(RGB(60, 60, 60));
+                    if (!paneLabelInactiveBrush || dark != paneLabelInactiveDark) {
+                        if (paneLabelInactiveBrush) DeleteObject(paneLabelInactiveBrush);
+                        paneLabelInactiveBrush = CreateSolidBrush(themeFaceBg());
+                        paneLabelInactiveDark = dark;
+                    }
                     HDC hdc = (HDC)wParam;
                     bool active = (i == cvActiveIdx());
                     SetBkMode(hdc, OPAQUE);
-                    SetTextColor(hdc, active ? RGB(255, 255, 255) : RGB(200, 200, 200));
-                    SetBkColor(hdc, active ? RGB(0, 120, 215) : RGB(60, 60, 60));
+                    SetTextColor(hdc, active ? RGB(255, 255, 255) : themeFaceText());
+                    SetBkColor(hdc, active ? RGB(0, 120, 215) : themeFaceBg());
                     return (LRESULT)(active ? paneLabelActiveBrush : paneLabelInactiveBrush);
                 }
             }

@@ -36,21 +36,29 @@ extern HWND hwndMain;
 
 HWND hwndNavbar = NULL;
 
-// Dark background for the search field (Wine would otherwise render it white).
+// Theme-aware brushes for the search field + owner-drawn navbar buttons. Recreated only
+// when the light/dark theme changes, so a brush returned to WM_CTLCOLOR* stays valid.
 static HBRUSH searchBgBrush = NULL;
-static HBRUSH getSearchBgBrush() {
-    if (!searchBgBrush) searchBgBrush = CreateSolidBrush(RGB(45, 45, 45));
-    return searchBgBrush;
-}
-
-// Dark backgrounds for the owner-drawn navbar buttons (breadcrumb, go, refresh, search).
 static HBRUSH navBtnBrush = NULL;
 static HBRUSH navBtnBrushPressed = NULL;
-static HBRUSH getNavBtnBrush(bool pressed) {
-    if (!navBtnBrush) navBtnBrush = CreateSolidBrush(RGB(45, 45, 45));
-    if (!navBtnBrushPressed) navBtnBrushPressed = CreateSolidBrush(RGB(70, 70, 70));
-    return pressed ? navBtnBrushPressed : navBtnBrush;
+static bool brushesDark = false;
+static bool brushesInit = false;
+
+static void ensureBrushes() {
+    bool dark = isDarkMode();
+    if (brushesInit && dark == brushesDark) return;
+    if (searchBgBrush) DeleteObject(searchBgBrush);
+    if (navBtnBrush) DeleteObject(navBtnBrush);
+    if (navBtnBrushPressed) DeleteObject(navBtnBrushPressed);
+    searchBgBrush = CreateSolidBrush(themeFieldBg());
+    navBtnBrush = CreateSolidBrush(themeFaceBg());
+    navBtnBrushPressed = CreateSolidBrush(themeFaceLine());
+    brushesDark = dark;
+    brushesInit = true;
 }
+
+static HBRUSH getSearchBgBrush() { ensureBrushes(); return searchBgBrush; }
+static HBRUSH getNavBtnBrush(bool pressed) { ensureBrushes(); return pressed ? navBtnBrushPressed : navBtnBrush; }
 
 static void createMorePopupMenu(struct FileNode* parent) {  
     HMENU menu = CreatePopupMenu();
@@ -167,7 +175,7 @@ LRESULT CALLBACK NavbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 GetWindowText(dis->hwndItem, text, 128);
                 HGDIOBJ of = SelectObject(hdc, getUIFont());
                 SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, RGB(230, 230, 230));
+                SetTextColor(hdc, themeFaceText());
                 RECT tr = rc;
                 tr.left += 6;
                 tr.right -= 4;
@@ -264,8 +272,8 @@ LRESULT CALLBACK SearchEditWrapperWndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
     if (msg == WM_CTLCOLOREDIT) {
         HWND hwndControl = (HWND)lParam;
         if (hwndControl == hwndSearchEdit) {
-            SetTextColor((HDC)wParam, searchEditEmpty ? RGB(150, 150, 150) : RGB(230, 230, 230));
-            SetBkColor((HDC)wParam, RGB(45, 45, 45));
+            SetTextColor((HDC)wParam, searchEditEmpty ? themePlaceholder() : themeFieldText());
+            SetBkColor((HDC)wParam, themeFieldBg());
             return (LRESULT)getSearchBgBrush();
         }
     }
