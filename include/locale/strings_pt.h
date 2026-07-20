@@ -29,6 +29,8 @@ static inline void loadStrings_pt() {
     lc_str.list = L"Lista";
     lc_str.details = L"Detalhes";
     lc_str.split_view = L"Tela Dividida";
+    lc_str.show_hidden = L"Mostrar Arquivos Ocultos";
+    lc_str.properties = L"Propriedades";
     lc_str.help = L"Ajuda";
     lc_str.about = L"Sobre";
     lc_str.ok = L"OK";

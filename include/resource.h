@@ -42,6 +42,16 @@
 #define ID_EDIT_PASTE_SHORTCUT 310
 #define ID_EDIT_SELECT_ALL 311
 #define ID_VIEW_SPLIT 312
+#define ID_VIEW_HIDDEN 313
+#define ID_FILE_PROPERTIES 314
+
+#define IDD_PROPERTIES 130
+#define IDC_PROP_NAME 131
+#define IDC_PROP_TYPE 132
+#define IDC_PROP_LOCATION 133
+#define IDC_PROP_SIZE 134
+#define IDC_PROP_MODIFIED 135
+#define IDC_PROGRESS 136
 
 #ifndef IDC_STATIC
 #define IDC_STATIC -1
@@ -80,6 +90,8 @@ struct LC_STR {
     wchar_t* list;
     wchar_t* details;
     wchar_t* split_view;
+    wchar_t* show_hidden;
+    wchar_t* properties;
     wchar_t* help;
     wchar_t* about;
     wchar_t* ok;

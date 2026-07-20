@@ -12,6 +12,8 @@ struct FileNode {
     bool hasChildDirs;
 };
 
+extern bool showHiddenFiles;
+
 void initFileNodes();
 wchar_t* getDesktopPath();
 void setCurrPathFileNode(struct FileNode* node);

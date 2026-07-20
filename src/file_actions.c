@@ -6,7 +6,8 @@
 
 enum Msg {
     MSG_CLOSE = WM_APP,
-    MSG_NAVIGATE_REFRESH
+    MSG_NAVIGATE_REFRESH,
+    MSG_PROGRESS
 };
 
 enum FileAction {
@@ -23,6 +24,8 @@ struct ActionData {
     int numSrcPaths;
     wchar_t* dstPath;
     bool cancel;
+    uint64_t totalBytes;
+    uint64_t doneBytes;
 };
 
 static HWND hwndDlg;
@@ -32,6 +35,21 @@ static wchar_t** clipboard = NULL;
 static int clipboardSize = 0;
 static bool clipboardIsCut = false;
 static struct ActionData* actionData = NULL;
+
+// Progress tracking for the active file operation.
+static struct ActionData* g_activeAction = NULL;
+static LONGLONG g_fileLastTransferred = 0;
+static int g_lastPct = -1;
+
+static void postProgress() {
+    if (!g_activeAction || g_activeAction->totalBytes == 0) return;
+    int pct = (int)((g_activeAction->doneBytes * 100) / g_activeAction->totalBytes);
+    if (pct > 100) pct = 100;
+    if (pct != g_lastPct) {
+        g_lastPct = pct;
+        PostMessage(hwndDlg, MSG_PROGRESS, (WPARAM)pct, 0);
+    }
+}
 
 extern HINSTANCE globalHInstance;
 extern HWND hwndMain;
@@ -50,6 +68,7 @@ void clearClipboard() {
 }
 
 static void freeActionData() {
+    g_activeAction = NULL;
     if (clipboardIsCut) clearClipboard();
     
     if (actionData) {
@@ -81,6 +100,9 @@ INT_PTR CALLBACK FileActionDialogProc(HWND hwndDlg, UINT msg, WPARAM wParam, LPA
                 preloaderIcons[i] = (HICON)LoadImage(globalHInstance, MAKEINTRESOURCE(IDI_PRELOADER_1 + i), IMAGE_ICON, 64, 64, 0);
             }
             
+            SendDlgItemMessage(hwndDlg, IDC_PROGRESS, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+            SendDlgItemMessage(hwndDlg, IDC_PROGRESS, PBM_SETPOS, 0, 0);
+
             HWND hwndLabel = GetDlgItem(hwndDlg, IDC_LABEL);
             switch (actionData->action) {
                 case ACTION_DELETE: {
@@ -129,6 +151,10 @@ INT_PTR CALLBACK FileActionDialogProc(HWND hwndDlg, UINT msg, WPARAM wParam, LPA
         }
         case MSG_NAVIGATE_REFRESH: {
             navigateRefresh();
+            break;
+        }
+        case MSG_PROGRESS: {
+            SendDlgItemMessage(hwndDlg, IDC_PROGRESS, PBM_SETPOS, wParam, 0);
             break;
         }
     }
@@ -209,6 +235,62 @@ static void extractAllISOFiles(void* handle, bool isCDImage, char* srcPath, wcha
 static bool bfmDeletePath(const wchar_t* path);
 static bool bfmCopyPath(const wchar_t* src, const wchar_t* dst);
 
+// CopyFileEx progress callback: accumulate bytes for the current COPY and post % to the
+// dialog. Also honors cancel. (Move/delete report count-based progress in the task loop.)
+static DWORD CALLBACK copyProgress(LARGE_INTEGER TotalFileSize, LARGE_INTEGER TotalBytesTransferred,
+        LARGE_INTEGER StreamSize, LARGE_INTEGER StreamBytesTransferred, DWORD dwStreamNumber,
+        DWORD dwCallbackReason, HANDLE hSourceFile, HANDLE hDestinationFile, LPVOID lpData) {
+    (void)TotalFileSize; (void)StreamSize; (void)StreamBytesTransferred; (void)dwStreamNumber;
+    (void)dwCallbackReason; (void)hSourceFile; (void)hDestinationFile; (void)lpData;
+
+    if (g_activeAction && g_activeAction->action == ACTION_COPY) {
+        g_activeAction->doneBytes += (TotalBytesTransferred.QuadPart - g_fileLastTransferred);
+        g_fileLastTransferred = TotalBytesTransferred.QuadPart;
+        postProgress();
+    }
+    if (g_activeAction && g_activeAction->cancel) return PROGRESS_CANCEL;
+    return PROGRESS_CONTINUE;
+}
+
+static uint64_t computeFileOrDirSize(const wchar_t* path) {
+    DWORD attr = GetFileAttributesW(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) return 0;
+
+    if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        WIN32_FILE_ATTRIBUTE_DATA info = {0};
+        if (GetFileAttributesExW(path, GetFileExInfoStandard, &info)) {
+            LARGE_INTEGER sz;
+            sz.LowPart = info.nFileSizeLow;
+            sz.HighPart = info.nFileSizeHigh;
+            return (uint64_t)sz.QuadPart;
+        }
+        return 0;
+    }
+
+    uint64_t total = 0;
+    wchar_t pattern[MAX_PATH] = {0};
+    swprintf_s(pattern, MAX_PATH, L"%ls\\*", path);
+    WIN32_FIND_DATAW wfd = {0};
+    HANDLE h = FindFirstFileW(pattern, &wfd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(wfd.cFileName, L".") == 0 || wcscmp(wfd.cFileName, L"..") == 0) continue;
+            wchar_t child[MAX_PATH] = {0};
+            swprintf_s(child, MAX_PATH, L"%ls\\%ls", path, wfd.cFileName);
+            total += computeFileOrDirSize(child);
+        }
+        while (FindNextFileW(h, &wfd));
+        FindClose(h);
+    }
+    return total;
+}
+
+static uint64_t computeTotalBytes(wchar_t** paths, int count) {
+    uint64_t total = 0;
+    for (int i = 0; i < count; i++) total += computeFileOrDirSize(paths[i]);
+    return total;
+}
+
 static bool bfmDeleteDirectory(const wchar_t* dir) {
     wchar_t pattern[MAX_PATH] = {0};
     swprintf_s(pattern, MAX_PATH, L"%ls\\*", dir);
@@ -267,7 +349,9 @@ static bool bfmCopyPath(const wchar_t* src, const wchar_t* dst) {
     if (attr == INVALID_FILE_ATTRIBUTES) return false;
     if (attr & FILE_ATTRIBUTE_DIRECTORY) return bfmCopyDirectory(src, dst);
 
-    return CopyFileW(src, dst, FALSE); // FALSE = overwrite existing
+    // File copy with byte-level progress + cancel (FALSE flag = overwrite existing).
+    g_fileLastTransferred = 0;
+    return CopyFileExW(src, dst, copyProgress, NULL, NULL, 0);
 }
 
 static bool bfmMovePath(const wchar_t* src, const wchar_t* dst) {
@@ -288,7 +372,10 @@ static void bfmJoinDest(const wchar_t* dstDir, const wchar_t* src, wchar_t* out)
 
 static DWORD WINAPI fileActionTask(void* param) {
     struct ActionData* actionData = (struct ActionData*)param;
-    
+
+    g_activeAction = actionData;
+    g_lastPct = -1;
+
     if (actionData->action == ACTION_ISO_EXTRACT) {
         wchar_t* srcPath = actionData->srcPaths[0];
         bool isCDImage = !hasFileExtension(srcPath, L"iso");
@@ -310,8 +397,14 @@ static DWORD WINAPI fileActionTask(void* param) {
     }
     else {
         DWORD lastTime = GetTickCount();
-            
-        for (int i = 0; i < actionData->numSrcPaths && !actionData->cancel; i++) {  
+
+        // COPY reports byte-accurate progress via the CopyFileEx callback; pre-sum the total.
+        if (actionData->action == ACTION_COPY) {
+            actionData->totalBytes = computeTotalBytes(actionData->srcPaths, actionData->numSrcPaths);
+            actionData->doneBytes = 0;
+        }
+
+        for (int i = 0; i < actionData->numSrcPaths && !actionData->cancel; i++) {
             wchar_t* src = actionData->srcPaths[i];
             if (actionData->action == ACTION_DELETE) {
                 if (!bfmDeletePath(src)) break;
@@ -326,6 +419,11 @@ static DWORD WINAPI fileActionTask(void* param) {
                 bool ok = (actionData->action == ACTION_COPY) ? bfmCopyPath(src, dst)
                                                               : bfmMovePath(src, dst);
                 if (!ok) break;
+            }
+
+            // Move/delete: count-based progress (copy is byte-based via the callback).
+            if (actionData->action != ACTION_COPY) {
+                PostMessage(hwndDlg, MSG_PROGRESS, (WPARAM)((i + 1) * 100 / actionData->numSrcPaths), 0);
             }
 
             DWORD currTime = GetTickCount();

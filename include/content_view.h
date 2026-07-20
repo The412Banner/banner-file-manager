@@ -39,5 +39,6 @@ void onMenuItemPasteShortcutClick();
 void onMenuItemNewFolderClick();
 void onMenuItemNewFileClick();
 void onMenuItemSelectAllClick();
+void onMenuItemPropertiesClick();
 
 #endif

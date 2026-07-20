@@ -17,6 +17,7 @@ struct LC_STR lc_str = {0};
 // the surrounding band is painted accent (active) or background (inactive) in WM_PAINT.
 #define PANE_FRAME 2
 static RECT paneCell[2] = {0};
+static HMENU hViewMenu = NULL;
 
 void cvInvalidatePaneFrames(void) {
     for (int i = 0; i < 2; i++) InvalidateRect(hwndMain, &paneCell[i], TRUE);
@@ -105,6 +106,11 @@ void mainMenuCommand(WPARAM wParam) {
             break;
         case ID_VIEW_SPLIT:
             cvToggleSplit();
+            break;
+        case ID_VIEW_HIDDEN:
+            showHiddenFiles = !showHiddenFiles;
+            if (hViewMenu) CheckMenuItem(hViewMenu, ID_VIEW_HIDDEN, MF_BYCOMMAND | (showHiddenFiles ? MF_CHECKED : MF_UNCHECKED));
+            navigateRefresh();
             break;
     }
 }
@@ -294,6 +300,8 @@ static void createMainMenu() {
     AppendMenu(hmView, MF_STRING, ID_VIEW_DETAILS, lc_str.details);
     AppendMenu(hmView, MF_SEPARATOR, 0, NULL);
     AppendMenu(hmView, MF_STRING, ID_VIEW_SPLIT, lc_str.split_view);
+    AppendMenu(hmView, MF_STRING, ID_VIEW_HIDDEN, lc_str.show_hidden);
+    hViewMenu = hmView;
 
     HMENU hmHelp = CreatePopupMenu();
     AppendMenu(hmHelp, MF_STRING, ID_HELP_ABOUT, lc_str.about);
@@ -315,8 +323,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     GetSystemDefaultLocaleName(localeName, 16);
     
     loadLCStrings(localeName);
-    
+
     globalHInstance = hInstance;
+
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES };
+    InitCommonControlsEx(&icc);
 
     WNDCLASSEX wcx = {0};
     wcx.cbSize = sizeof(wcx);

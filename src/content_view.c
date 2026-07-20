@@ -38,6 +38,7 @@ struct Pane {
     struct FileNode* currPath;      // this pane's path chain (independent per pane)
     struct ListItem* items;
     int numItems;
+    uint64_t totalSize;             // sum of item sizes, shown in the status bar
     enum ViewStyle viewStyle;
     char sortColumnIdx;
     bool sortAscending;
@@ -77,6 +78,7 @@ static struct ContextMenuItem cmiLoadISOImage = {NULL, &onMenuItemLoadISOImageCl
 static struct ContextMenuItem cmiUnloadISOImage = {NULL, &onMenuItemUnloadISOImageClick, NULL};
 static struct ContextMenuItem cmiOpenAsAdmin = {NULL, &onMenuItemOpenAsAdminClick, NULL};
 static struct ContextMenuItem cmiChooseProgram = {NULL, &onMenuItemOpenWithClick, NULL};
+static struct ContextMenuItem cmiProperties = {NULL, &onMenuItemPropertiesClick, NULL};
 
 static WNDPROC OrigWndProc;
 static HMENU hContextMenu;
@@ -171,8 +173,10 @@ static void fillFileInfo(struct FileNode* node, struct ListItem* item) {
 static void updateStatusbar(struct Pane* p) {
     // The single status bar reflects the active pane only.
     if (p != activePane()) return;
-    wchar_t statusText[32] = {0};
-    swprintf_s(statusText, 32, L"%d %ls", p->numItems, lc_str.items);
+    wchar_t sizeStr[32] = {0};
+    formatFileSize(p->totalSize, sizeStr);
+    wchar_t statusText[96] = {0};
+    swprintf_s(statusText, 96, L"%d %ls    %ls", p->numItems, lc_str.items, sizeStr);
     setStatusbarText(statusText);
 }
 
@@ -209,6 +213,7 @@ static void clearPane(struct Pane* p) {
         p->items = NULL;
     }
     p->numItems = 0;
+    p->totalSize = 0;
 
     freeMenuItems();
 }
@@ -276,6 +281,7 @@ LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 item->loaded = false;
 
                 fillFileInfo(node, item);
+                p->totalSize += item->size;
 
                 ListView_SetItemCountEx(p->hwndList, p->numItems, LVSICF_NOINVALIDATEALL);
                 updateStatusbar(p);
@@ -552,7 +558,10 @@ static void createContextMenu(enum ContextMenuType type) {
         addContextMenuItem(hMenu, id++, &cmiCreateShortcut, false);
         addContextMenuItem(hMenu, id++, &cmiDelete, false);
 
-        if (type == MENU_SINGLE) addContextMenuItem(hMenu, id++, &cmiRename, false);
+        if (type == MENU_SINGLE) {
+            addContextMenuItem(hMenu, id++, &cmiRename, true);
+            addContextMenuItem(hMenu, id++, &cmiProperties, false);
+        }
     }
     else {
         addContextMenuItem(hMenu, id++, &cmiPaste, false);
@@ -682,6 +691,27 @@ LRESULT contentViewNotify(NMHDR* nmhdr) {
             }
 
             refreshPane(p);
+            break;
+        }
+        case LVN_KEYDOWN: {
+            NMLVKEYDOWN* kd = (NMLVKEYDOWN*)nmhdr;
+            cvSetActiveByHwnd(nmhdr->hwndFrom);
+            bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            switch (kd->wVKey) {
+                case VK_F2: updateSelectedItems(); onMenuItemRenameClick(); break;
+                case VK_DELETE: onMenuItemDeleteClick(); break;
+                case VK_F5: navigateRefresh(); break;
+                case VK_F6: cvToggleSplit(); break;
+                case VK_BACK: navigateUp(); break;
+                case VK_RETURN:
+                    updateSelectedItems();
+                    if (numSelectedItems == 1) openFileNode(selectedItems[0]);
+                    break;
+                case 'C': if (ctrl) onMenuItemCopyClick(); break;
+                case 'X': if (ctrl) onMenuItemCutClick(); break;
+                case 'V': if (ctrl) onMenuItemPasteClick(); break;
+                case 'A': if (ctrl) onMenuItemSelectAllClick(); break;
+            }
             break;
         }
     }
@@ -826,6 +856,7 @@ void createContentView() {
     cmiUnloadISOImage.text = lc_str.unload_iso_image;
     cmiOpenAsAdmin.text = lc_str.open_as_admin;
     cmiChooseProgram.text = lc_str.choose_program;
+    cmiProperties.text = lc_str.properties;
 
     for (int i = 0; i < NUM_PANES; i++) {
         panes[i].hwndList = createOneContentView();
@@ -904,6 +935,80 @@ void onMenuItemUpClick() {
 
 void onMenuItemOpenClick() {
     if (numSelectedItems == 1) openFileNode(selectedItems[0]);
+}
+
+static struct {
+    wchar_t name[MAX_PATH];
+    wchar_t type[80];
+    wchar_t location[MAX_PATH];
+    wchar_t size[32];
+    wchar_t modified[32];
+} propInfo;
+
+static INT_PTR CALLBACK PropertiesDialogProc(HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    UNREFERENCED_PARAMETER(lParam);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            RECT rect, rect1;
+            GetWindowRect(GetParent(hwndDlg), &rect);
+            GetClientRect(hwndDlg, &rect1);
+            SetWindowPos(hwndDlg, NULL, (rect.right + rect.left) / 2 - (rect1.right - rect1.left) / 2,
+                         (rect.bottom + rect.top) / 2 - (rect1.bottom - rect1.top) / 2, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
+            SetWindowText(hwndDlg, lc_str.properties);
+            SetWindowText(GetDlgItem(hwndDlg, IDC_PROP_NAME), propInfo.name);
+            SetWindowText(GetDlgItem(hwndDlg, IDC_PROP_TYPE), propInfo.type);
+            SetWindowText(GetDlgItem(hwndDlg, IDC_PROP_LOCATION), propInfo.location);
+            SetWindowText(GetDlgItem(hwndDlg, IDC_PROP_SIZE), propInfo.size);
+            SetWindowText(GetDlgItem(hwndDlg, IDC_PROP_MODIFIED), propInfo.modified);
+            return (INT_PTR)TRUE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+                EndDialog(hwndDlg, (INT_PTR)LOWORD(wParam));
+                return (INT_PTR)TRUE;
+            }
+            break;
+    }
+    return (INT_PTR)FALSE;
+}
+
+void onMenuItemPropertiesClick() {
+    if (numSelectedItems != 1) return;
+    struct FileNode* node = selectedItems[0];
+
+    wchar_t path[MAX_PATH] = {0};
+    getFileNodePath(node, path);
+
+    wcscpy_s(propInfo.name, MAX_PATH, node->name);
+
+    struct FileInfo fi = {0};
+    getFileInfo(path, node->type, false, &fi);
+    wcscpy_s(propInfo.type, 80, fi.typeName);
+
+    if (node->parent) getFileNodePath(node->parent, propInfo.location);
+    else propInfo.location[0] = L'\0';
+
+    propInfo.size[0] = L'\0';
+    propInfo.modified[0] = L'\0';
+
+    if (node->type == TYPE_FILE) {
+        WIN32_FILE_ATTRIBUTE_DATA info = {0};
+        if (GetFileAttributesEx(path, GetFileExInfoStandard, &info)) {
+            LARGE_INTEGER sz;
+            sz.LowPart = info.nFileSizeLow;
+            sz.HighPart = info.nFileSizeHigh;
+            formatFileSize(sz.QuadPart, propInfo.size);
+
+            SYSTEMTIME st = {0};
+            FILETIME lt;
+            if (FileTimeToLocalFileTime(&info.ftLastWriteTime, &lt) && FileTimeToSystemTime(&lt, &st)) {
+                formatModifiedDate(st.wMonth, st.wDay, st.wYear, st.wHour, st.wMinute, propInfo.modified, 32);
+            }
+        }
+    }
+    else wcscpy_s(propInfo.size, 32, L"-");
+
+    DialogBox(globalHInstance, MAKEINTRESOURCE(IDD_PROPERTIES), hwndMain, &PropertiesDialogProc);
 }
 
 void onMenuItemOpenAsAdminClick() {
@@ -1145,6 +1250,7 @@ static void refreshPane(struct Pane* p) {
         item->loaded = false;
 
         fillFileInfo(child, item);
+        p->totalSize += item->size;
 
         child = child->sibling;
     }

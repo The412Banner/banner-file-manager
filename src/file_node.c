@@ -2,6 +2,7 @@
 
 struct FileNode* treeFileNode = NULL;
 struct FileNode* currPathFileNode = NULL;
+bool showHiddenFiles = false;
 
 static wchar_t desktopPath[MAX_PATH] = {0};
 static wchar_t personalPath[MAX_PATH] = {0};
@@ -88,7 +89,7 @@ void buildChildNodes(struct FileNode* parent, bool onlyDirs) {
                (onlyDirs && (wfd.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE))) continue; 
             
             if (((wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (wfd.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)) &&
-                !(wfd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)) {
+                (showHiddenFiles || !(wfd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN))) {
                 enum FileType type = (wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? TYPE_DIR : TYPE_FILE;
                 
                 wchar_t* name = wcsdup(wfd.cFileName);
