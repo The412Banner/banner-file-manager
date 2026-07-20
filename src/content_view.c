@@ -856,6 +856,67 @@ static void createLVColumns(HWND hwndList) {
     ListView_InsertColumn(hwndList, COLUMN_DATE_IDX, &column);
 }
 
+// The list-view column header (SysHeader32) renders with a light band under the dark
+// container theme, making the titles unreadable. Owner-draw it dark instead.
+static WNDPROC OrigHeaderProc = NULL;
+
+static LRESULT CALLBACK HeaderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_ERASEBKGND) return 1;
+    if (msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+
+        HBRUSH bg = CreateSolidBrush(RGB(45, 45, 45));
+        FillRect(hdc, &rc, bg);
+        DeleteObject(bg);
+
+        HGDIOBJ oldFont = SelectObject(hdc, getUIFont());
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(225, 225, 225));
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+
+        int count = (int)SendMessage(hwnd, HDM_GETITEMCOUNT, 0, 0);
+        for (int i = 0; i < count; i++) {
+            RECT ir;
+            if (!(BOOL)SendMessage(hwnd, HDM_GETITEMRECT, i, (LPARAM)&ir)) continue;
+
+            wchar_t text[64] = {0};
+            HDITEM hdi = {0};
+            hdi.mask = HDI_TEXT;
+            hdi.pszText = text;
+            hdi.cchTextMax = 64;
+            SendMessage(hwnd, HDM_GETITEM, i, (LPARAM)&hdi);
+
+            RECT tr = ir;
+            tr.left += 8;
+            tr.right -= 4;
+            DrawText(hdc, text, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+            MoveToEx(hdc, ir.right - 1, ir.top + 3, NULL);
+            LineTo(hdc, ir.right - 1, ir.bottom - 3);
+        }
+
+        SelectObject(hdc, oldPen);
+        DeleteObject(pen);
+        SelectObject(hdc, oldFont);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    return CallWindowProc(OrigHeaderProc, hwnd, msg, wParam, lParam);
+}
+
+// Fit columns to the pane so the four columns never overflow (no horizontal scrollbar):
+// the Name column absorbs the leftover width.
+void cvFitColumns(HWND list, int totalWidth) {
+    int other = 85 + 65 + 95; // type + size + date
+    int nameW = totalWidth - other - GetSystemMetrics(SM_CXVSCROLL) - 6;
+    if (nameW < 90) nameW = 90;
+    SendMessage(list, LVM_SETCOLUMNWIDTH, COLUMN_NAME_IDX, (LPARAM)nameW);
+}
+
 static HWND createOneContentView() {
     HWND hwnd = CreateWindowEx(0, WC_LISTVIEW, NULL, WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_BORDER | LVS_OWNERDATA | LVS_REPORT | LVS_SHAREIMAGELISTS,
                                0, 0, 0, 0, hwndMain, (HMENU)NULL, globalHInstance, NULL);
@@ -866,6 +927,15 @@ static HWND createOneContentView() {
     // a light header band that renders the column titles unreadable.
     ListView_SetExtendedListViewStyle(hwnd, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
     createLVColumns(hwnd);
+
+    // Owner-draw the column header dark (see HeaderWndProc). Both list views share the
+    // same header class, so capture the original proc once.
+    HWND hdr = (HWND)SendMessage(hwnd, LVM_GETHEADER, 0, 0);
+    if (hdr) {
+        if (!OrigHeaderProc) OrigHeaderProc = (WNDPROC)GetWindowLongPtr(hdr, GWLP_WNDPROC);
+        SetWindowLongPtr(hdr, GWLP_WNDPROC, (LONG_PTR)HeaderWndProc);
+    }
+
     UpdateWindow(hwnd);
     return hwnd;
 }

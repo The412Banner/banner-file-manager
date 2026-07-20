@@ -23,6 +23,7 @@ HWND cvActiveHwnd();
 HWND cvPaneHwnd(int i);
 HWND cvPaneLabel(int i);
 bool cvActivatePaneByLabel(HWND h);
+void cvFitColumns(HWND list, int totalWidth);
 int cvActiveIdx();
 bool cvSplitOn();
 

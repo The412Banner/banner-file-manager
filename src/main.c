@@ -174,6 +174,7 @@ void resizeControls() {
             SetWindowPos(cvPaneLabel(i), NULL, x, y, w, labelH, SWP_NOZORDER);
         }
         SetWindowPos(cvPaneHwnd(i), NULL, x, y + labelH, w, h - labelH, SWP_NOZORDER);
+        cvFitColumns(cvPaneHwnd(i), w);
     }
 }
 
