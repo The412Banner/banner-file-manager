@@ -158,31 +158,40 @@ static void freeCurrPathFileNode() {
     currPathFileNode = NULL;
 }
 
-void setCurrPathFileNode(struct FileNode* node) {
+// Build a fresh, independent copy of node's ancestry chain (root..node) and return
+// the leaf. Used both by setCurrPathFileNode and by the dual-pane code to give each
+// pane its own path chain without aliasing.
+struct FileNode* copyPathChain(struct FileNode* node) {
     struct FileNode* currNode = node;
     int count = 0;
     while (currNode) {
         count++;
         currNode = currNode->parent;
     }
-    
+
     struct FileNode* nodes[count];
     int i = 0;
     currNode = node;
     while (currNode) {
         nodes[i++] = currNode;
         currNode = currNode->parent;
-    }   
-    
+    }
+
+    currNode = NULL;
     for (int i = count-1; i >= 0; i--) {
         wchar_t* name = wcsdup(nodes[i]->name);
         struct FileNode* newNode = allocFileNode(name, nodes[i]->type);
         newNode->parent = currNode;
         currNode = newNode;
     }
-    
+
+    return currNode;
+}
+
+void setCurrPathFileNode(struct FileNode* node) {
+    struct FileNode* chain = copyPathChain(node);
     freeCurrPathFileNode();
-    currPathFileNode = currNode;
+    currPathFileNode = chain;
 }
 
 void setCurrPathFromString(wchar_t* path) {

@@ -28,6 +28,7 @@ static inline void loadStrings_ru() {
     lc_str.small_icons = L"Маленькие Иконки";
     lc_str.list = L"Список";
     lc_str.details = L"Подробности";
+    lc_str.split_view = L"Разделить окно";
     lc_str.help = L"Помощь";
     lc_str.about = L"О программе";
     lc_str.ok = L"OK";

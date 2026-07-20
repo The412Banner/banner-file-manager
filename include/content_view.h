@@ -15,6 +15,15 @@ void refreshContentView();
 void setViewStyle(enum ViewStyle newViewStyle);
 void searchFor(wchar_t* keyword);
 
+// Dual-pane API (implemented in content_view.c, used by main.c / navbar.c)
+void cvInitPanePaths();
+void cvToggleSplit();
+bool cvIsContentView(HWND h);
+HWND cvActiveHwnd();
+HWND cvPaneHwnd(int i);
+int cvActiveIdx();
+bool cvSplitOn();
+
 void onMenuItemUpClick();
 void onMenuItemOpenClick();
 void onMenuItemEditClick();

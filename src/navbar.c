@@ -33,7 +33,6 @@ static int numAddrButtons = 0;
 extern struct FileNode* currPathFileNode;
 extern HINSTANCE globalHInstance;
 extern HWND hwndMain;
-extern HWND hwndContentView;
 
 HWND hwndNavbar = NULL;
 
@@ -171,7 +170,7 @@ LRESULT CALLBACK NavbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                     }
                     else {
                         navigateToFileNode(button->node);
-                        SetFocus(hwndContentView);
+                        SetFocus(cvActiveHwnd());
                     }
                     return 0;
                 }
@@ -183,11 +182,11 @@ LRESULT CALLBACK NavbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 SendMessage(hwndAddrEdit, WM_GETTEXT, len + 1, (LPARAM)path);
                 setEditMode(false);
                 navigateToPath(path);
-                SetFocus(hwndContentView);
+                SetFocus(cvActiveHwnd());
             }
             else if (hwndControl == hwndRefreshButton) {
                 navigateRefresh();
-                SetFocus(hwndContentView);
+                SetFocus(cvActiveHwnd());
             }
             else if (hwndControl == hwndSearchButton) {
                 if (!searchEditEmpty) {
@@ -207,7 +206,7 @@ LRESULT CALLBACK NavbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 getFileNodePath(node, path);
                 
                 navigateToPath(path);
-                SetFocus(hwndContentView);
+                SetFocus(cvActiveHwnd());
             }
             return 0;
         }

@@ -6,6 +6,8 @@
 #define COLUMN_DATE_IDX 3
 #define COLUMN_PATH_IDX 4
 
+#define NUM_PANES 2
+
 enum Msg {
     MSG_ADD_ITEM = WM_APP,
     MSG_SEARCH_DONE
@@ -29,10 +31,24 @@ struct ListItem {
     FILETIME modifiedTime;
 };
 
+// Per-pane state. Both list views are live simultaneously (each fires its own
+// LVN_GETDISPINFO on repaint), so the backing data must be resolvable per HWND.
+struct Pane {
+    HWND hwndList;
+    struct FileNode* currPath;      // this pane's path chain (independent per pane)
+    struct ListItem* items;
+    int numItems;
+    enum ViewStyle viewStyle;
+    char sortColumnIdx;
+    bool sortAscending;
+    struct SearchData* searchData;
+};
+
 struct SearchData {
     wchar_t* keyword;
     bool active;
     bool canceled;
+    struct Pane* pane;
 };
 
 struct ContextMenuItem {
@@ -59,12 +75,12 @@ static struct ContextMenuItem cmiLoadISOImage = {NULL, &onMenuItemLoadISOImageCl
 static struct ContextMenuItem cmiUnloadISOImage = {NULL, &onMenuItemUnloadISOImageClick, NULL};
 
 static WNDPROC OrigWndProc;
-static struct ListItem* items = NULL;
-static int numItems = 0;
-static enum ViewStyle viewStyle = STYLE_DETAILS;
 static HMENU hContextMenu;
-static char sortColumnIdx = COLUMN_NAME_IDX;
-static bool sortAscending = true;
+
+static struct Pane panes[NUM_PANES] = {0};
+static int activeIdx = 0;
+static bool splitOn = false;
+static struct Pane* g_sortPane = NULL;
 
 static struct FileNode** selectedItems = NULL;
 static int numSelectedItems = 0;
@@ -72,25 +88,61 @@ static int numSelectedItems = 0;
 static struct ContextMenuItem* menuItems = NULL;
 static int numMenuItems = 0;
 
-static struct SearchData* searchData;
-
 extern struct FileNode* currPathFileNode;
 extern HINSTANCE globalHInstance;
 extern HWND hwndMain;
 
-HWND hwndContentView = NULL;
+// forward declarations (defined later in this file / in main.c)
+static void refreshPane(struct Pane* p);
+static void cvSetActiveByHwnd(HWND h);
+void cvInvalidatePaneFrames(void); // main.c
+
+static struct Pane* activePane() {
+    return &panes[activeIdx];
+}
+
+static struct Pane* paneFromHwnd(HWND h) {
+    for (int i = 0; i < NUM_PANES; i++) {
+        if (panes[i].hwndList == h) return &panes[i];
+    }
+    return &panes[activeIdx];
+}
+
+// ---- exported accessors used by main.c / navbar.c ----
+HWND cvActiveHwnd() {
+    return panes[activeIdx].hwndList;
+}
+
+HWND cvPaneHwnd(int i) {
+    return (i >= 0 && i < NUM_PANES) ? panes[i].hwndList : NULL;
+}
+
+int cvActiveIdx() {
+    return activeIdx;
+}
+
+bool cvSplitOn() {
+    return splitOn;
+}
+
+bool cvIsContentView(HWND h) {
+    for (int i = 0; i < NUM_PANES; i++) {
+        if (panes[i].hwndList == h) return true;
+    }
+    return false;
+}
 
 static void fillFileInfo(struct FileNode* node, struct ListItem* item) {
     item->size = 0;
     memset(&item->modifiedTime, 0, sizeof(FILETIME));
-    
+
     if (node->type == TYPE_FILE) {
         LARGE_INTEGER filesize;
         WIN32_FILE_ATTRIBUTE_DATA info = {0};
 
         wchar_t path[MAX_PATH] = {0};
         getFileNodePath(node, path);
-        GetFileAttributesEx(path, GetFileExInfoStandard, &info);        
+        GetFileAttributesEx(path, GetFileExInfoStandard, &info);
 
         if ((info.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)) {
             filesize.LowPart = info.nFileSizeLow;
@@ -102,10 +154,12 @@ static void fillFileInfo(struct FileNode* node, struct ListItem* item) {
     }
 }
 
-static void updateStatusbar() {
+static void updateStatusbar(struct Pane* p) {
+    // The single status bar reflects the active pane only.
+    if (p != activePane()) return;
     wchar_t statusText[32] = {0};
-    swprintf_s(statusText, 32, L"%d %ls", numItems, lc_str.items);
-    setStatusbarText(statusText);   
+    swprintf_s(statusText, 32, L"%d %ls", p->numItems, lc_str.items);
+    setStatusbarText(statusText);
 }
 
 static void freeMenuItems() {
@@ -117,28 +171,32 @@ static void freeMenuItems() {
             }
         }
         free(menuItems);
-        menuItems = NULL;        
+        menuItems = NULL;
     }
-    numMenuItems = 0;    
+    numMenuItems = 0;
 }
 
-void clearContentView() {    
-    ListView_SetItemCountEx(hwndContentView, 0, 0);
-    ListView_DeleteColumn(hwndContentView, COLUMN_PATH_IDX);    
-    
-    if (items) {
-        for (int i = 0; i < numItems; i++) {
-            if (items[i].path) {
-                free(items[i].path);
-                items[i].path = NULL;
+static void clearPane(struct Pane* p) {
+    ListView_SetItemCountEx(p->hwndList, 0, 0);
+    ListView_DeleteColumn(p->hwndList, COLUMN_PATH_IDX);
+
+    if (p->items) {
+        for (int i = 0; i < p->numItems; i++) {
+            if (p->items[i].path) {
+                free(p->items[i].path);
+                p->items[i].path = NULL;
             }
         }
-        free(items);
-        items = NULL;
+        free(p->items);
+        p->items = NULL;
     }
-    numItems = 0;
-    
+    p->numItems = 0;
+
     freeMenuItems();
+}
+
+void clearContentView() {
+    clearPane(activePane());
 }
 
 static void execCommandLine(wchar_t *command) {
@@ -147,18 +205,22 @@ static void execCommandLine(wchar_t *command) {
     shExecInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
     shExecInfo.hwnd = hwndMain;
     shExecInfo.lpVerb = NULL;
-    shExecInfo.lpFile = L"C:\\windows\\system32\\cmd.exe";        
-    shExecInfo.lpParameters = command;   
+    shExecInfo.lpFile = L"C:\\windows\\system32\\cmd.exe";
+    shExecInfo.lpParameters = command;
     shExecInfo.lpDirectory = NULL;
     shExecInfo.nShow = SW_SHOW;
-    shExecInfo.hInstApp = NULL; 
+    shExecInfo.hInstApp = NULL;
     ShellExecuteEx(&shExecInfo);
     WaitForSingleObject(shExecInfo.hProcess, INFINITE);
-    CloseHandle(shExecInfo.hProcess);    
+    CloseHandle(shExecInfo.hProcess);
 }
 
 LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_SETFOCUS: {
+            cvSetActiveByHwnd(hwnd);
+            break;
+        }
         case WM_COMMAND: {
             if ((HWND)lParam == 0) {
                 MENUITEMINFO item;
@@ -166,7 +228,7 @@ LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 item.fMask = MIIM_DATA;
                 GetMenuItemInfo(hContextMenu, LOWORD(wParam), FALSE, &item);
                 struct ContextMenuItem* cmItem = (struct ContextMenuItem*)item.dwItemData;
-                
+
                 if (cmItem->cmdData) {
                     wchar_t command[MAX_PATH];
                     wcscpy_s(command, MAX_PATH, L"/C ");
@@ -175,51 +237,56 @@ LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     navigateRefresh();
                 }
                 else cmItem->proc();
-            }           
+            }
             break;
         }
         case MSG_ADD_ITEM: {
-            if (searchData != NULL && searchData->active) {
+            struct Pane* p = paneFromHwnd(hwnd);
+            if (p->searchData != NULL && p->searchData->active) {
                 struct FileNode* node = (struct FileNode*)lParam;
-                int index = numItems++;
-                items = realloc(items, numItems * sizeof(struct ListItem));     
-                struct ListItem* item = &items[index];
+                int index = p->numItems++;
+                p->items = realloc(p->items, p->numItems * sizeof(struct ListItem));
+                struct ListItem* item = &p->items[index];
                 item->node = node;
                 item->path = NULL;
                 item->loaded = false;
-                
+
                 fillFileInfo(node, item);
-                
-                ListView_SetItemCountEx(hwndContentView, numItems, LVSICF_NOINVALIDATEALL);
-                updateStatusbar();
+
+                ListView_SetItemCountEx(p->hwndList, p->numItems, LVSICF_NOINVALIDATEALL);
+                updateStatusbar(p);
             }
             break;
         }
         case MSG_SEARCH_DONE: {
-            searchData->active = false;
-            bool canceled = searchData->canceled;
-            free(searchData);
-            searchData = NULL;
-            if (canceled) {
-                refreshContentView();
+            struct Pane* p = paneFromHwnd(hwnd);
+            if (p->searchData) {
+                p->searchData->active = false;
+                bool canceled = p->searchData->canceled;
+                free(p->searchData);
+                p->searchData = NULL;
+                if (canceled) {
+                    refreshPane(p);
+                }
+                else updateStatusbar(p);
             }
-            else updateStatusbar();
             break;
         }
     }
-    return OrigWndProc(hwnd, msg, wParam, lParam);  
+    return OrigWndProc(hwnd, msg, wParam, lParam);
 }
 
 void updateSelectedItems() {
+    struct Pane* p = activePane();
     MEMFREE(selectedItems);
     numSelectedItems = 0;
 
-    int i = ListView_GetNextItem(hwndContentView, -1, LVNI_SELECTED);
-    while (i != -1) {       
+    int i = ListView_GetNextItem(p->hwndList, -1, LVNI_SELECTED);
+    while (i != -1) {
         int index = numSelectedItems++;
         selectedItems = realloc(selectedItems, numSelectedItems * sizeof(struct FileNode*));
-        selectedItems[index] = items[i].node;
-        i = ListView_GetNextItem(hwndContentView, i, LVNI_SELECTED);
+        selectedItems[index] = p->items[i].node;
+        i = ListView_GetNextItem(p->hwndList, i, LVNI_SELECTED);
     }
 }
 
@@ -246,15 +313,15 @@ static void createContextMenuFromRegistry(int* id) {
     freeMenuItems();
     HKEY hkeyContextMenu, hkeyItem;
     if (RegOpenKey(HKEY_CURRENT_USER, L"SOFTWARE\\Winlator\\WFM\\ContextMenu", &hkeyContextMenu) != ERROR_SUCCESS) return;
-    
+
     WCHAR itemName[30] = {0};
     WCHAR subitemName[100] = {0};
     WCHAR itemValue[MAX_PATH];
     DWORD i, j, itemNameLen, itemValueLen;
-    
+
     i = 0;
     while (i < 10) {
-        itemNameLen = 30;    
+        itemNameLen = 30;
         if (RegEnumKey(hkeyContextMenu, i++, itemName, itemNameLen) != ERROR_SUCCESS) break;
         if (RegOpenKey(hkeyContextMenu, itemName, &hkeyItem) == ERROR_SUCCESS) {
             MENUITEMINFO item = {0};
@@ -264,58 +331,58 @@ static void createContextMenuFromRegistry(int* id) {
             item.dwTypeData = itemName;
             item.cch = itemNameLen;
             item.wID = ++(*id);
-            
+
             HMENU hSubmenu = CreatePopupMenu();
-            
+
             j = 0;
             while (j < 10) {
                 itemNameLen = 100;
                 itemValueLen = MAX_PATH;
                 if (RegEnumValue(hkeyItem, j++, subitemName, &itemNameLen, NULL, NULL, (LPBYTE)itemValue, &itemValueLen) != ERROR_SUCCESS) break;
-                
+
                 int index = numMenuItems++;
-                menuItems = realloc(menuItems, numMenuItems * sizeof(struct ContextMenuItem));     
-                
+                menuItems = realloc(menuItems, numMenuItems * sizeof(struct ContextMenuItem));
+
                 struct ContextMenuItem* cmItem = &menuItems[index];
                 cmItem->text = subitemName;
                 cmItem->proc = NULL;
-                
+
                 wchar_t *cmdData = malloc(1024);
                 wcscpy_s(cmdData, MAX_PATH, itemValue);
-                
+
                 wchar_t path[MAX_PATH] = {0};
                 getFileNodePath(selectedItems[0], path);
                 cmdData = strReplace(cmdData, L"%FILE%", path, true);
-                
+
                 wchar_t basename[80] = {0};
                 getBasenameFromPath(path, basename, true);
-                cmdData = strReplace(cmdData, L"%BASENAME%", basename, true);                
-                
+                cmdData = strReplace(cmdData, L"%BASENAME%", basename, true);
+
                 getFileNodePath(selectedItems[0]->parent, path);
                 cmdData = strReplace(cmdData, L"%DIR%", path, true);
-                
+
                 cmItem->cmdData = cmdData;
                 addContextMenuItem(hSubmenu, (*id)++, cmItem, false);
             }
-            
+
             item.hSubMenu = hSubmenu;
-            
+
             InsertMenuItem(hContextMenu, -1, TRUE, &item);
-            
+
             item.fMask = MIIM_TYPE;
             item.fType = MFT_SEPARATOR;
             InsertMenuItem(hContextMenu, -1, TRUE, &item);
-            
+
             RegCloseKey(hkeyItem);
         }
     }
-    
+
     RegCloseKey(hkeyContextMenu);
 }
 
 static void createCDDriveContextMenu(int* id) {
     HMENU hSubmenu = CreatePopupMenu();
-    
+
     wchar_t currentISOPath[MAX_PATH] = {0};
     int currentISOPathLen = MAX_PATH;
     HKEY hkey;
@@ -323,15 +390,15 @@ static void createCDDriveContextMenu(int* id) {
         RegQueryValue(hkey, NULL, currentISOPath, (PLONG)&currentISOPathLen);
         RegCloseKey(hkey);
     }
-    
+
     wchar_t itemText[64] = {0};
     swprintf_s(itemText, MAX_PATH, L"%ls <%ls>", lc_str.load_iso_image, currentISOPathLen != MAX_PATH ? currentISOPath : lc_str.no_media);
     cmiLoadISOImage.text = itemText;
     addContextMenuItem(hSubmenu, (*id)++, &cmiLoadISOImage, false);
     cmiLoadISOImage.text = NULL;
-    
+
     addContextMenuItem(hSubmenu, (*id)++, &cmiUnloadISOImage, false);
-    
+
     MENUITEMINFO item = {0};
     item.cbSize = sizeof(MENUITEMINFO);
     item.fMask = MIIM_TYPE | MIIM_ID | MIIM_SUBMENU;
@@ -339,14 +406,14 @@ static void createCDDriveContextMenu(int* id) {
     swprintf_s(itemText, 64, L"%ls [X:]", lc_str.cd_drive);
     item.dwTypeData = itemText;
     item.cch = wcslen(itemText);
-    item.wID = ++(*id);    
-    
+    item.wID = ++(*id);
+
     item.hSubMenu = hSubmenu;
-    InsertMenuItem(hContextMenu, -1, TRUE, &item);    
-    
+    InsertMenuItem(hContextMenu, -1, TRUE, &item);
+
     item.fMask = MIIM_TYPE;
     item.fType = MFT_SEPARATOR;
-    InsertMenuItem(hContextMenu, -1, TRUE, &item);    
+    InsertMenuItem(hContextMenu, -1, TRUE, &item);
 }
 
 static void createContextMenu(enum ContextMenuType type) {
@@ -369,7 +436,7 @@ static void createContextMenu(enum ContextMenuType type) {
         addContextMenuItem(hMenu, id++, &cmiCopy, true);
         addContextMenuItem(hMenu, id++, &cmiCreateShortcut, false);
         addContextMenuItem(hMenu, id++, &cmiDelete, false);
-        
+
         if (type == MENU_SINGLE) addContextMenuItem(hMenu, id++, &cmiRename, false);
     }
     else {
@@ -382,26 +449,32 @@ static void createContextMenu(enum ContextMenuType type) {
 
     POINT cursor;
     GetCursorPos(&cursor);
-    TrackPopupMenu(hMenu, 0, cursor.x, cursor.y, 0, hwndContentView, NULL);
+    TrackPopupMenu(hMenu, 0, cursor.x, cursor.y, 0, activePane()->hwndList, NULL);
 }
 
 LRESULT contentViewNotify(NMHDR* nmhdr) {
+    struct Pane* p = paneFromHwnd(nmhdr->hwndFrom);
+
     switch (nmhdr->code) {
+        case NM_SETFOCUS: {
+            cvSetActiveByHwnd(nmhdr->hwndFrom);
+            break;
+        }
         case LVN_GETDISPINFO: {
             NMLVDISPINFO* nmlvdi = (NMLVDISPINFO*)nmhdr;
             UINT mask = nmlvdi->item.mask;
-            struct ListItem* item = &items[nmlvdi->item.iItem];
-            
+            struct ListItem* item = &p->items[nmlvdi->item.iItem];
+
             if (!item->loaded) {
                 wchar_t path[MAX_PATH] = {0};
                 getFileNodePath(item->node, path);
-                
+
                 struct FileInfo fi = {0};
-                getFileInfo(path, item->node->type, viewStyle == STYLE_LARGE_ICON, &fi);
+                getFileInfo(path, item->node->type, p->viewStyle == STYLE_LARGE_ICON, &fi);
 
                 if (item->node->type == TYPE_FILE) {
                     formatFileSize(item->size, item->formattedSize);
-                    
+
                     SYSTEMTIME systemTime = {0};
                     FILETIME localFiletime;
                     if (FileTimeToLocalFileTime(&item->modifiedTime, &localFiletime) && FileTimeToSystemTime(&localFiletime, &systemTime)) {
@@ -411,17 +484,17 @@ LRESULT contentViewNotify(NMHDR* nmhdr) {
 
                 item->icon = fi.icon;
                 wcscpy_s(item->type, 80, fi.typeName);
-                item->loaded = true;                
+                item->loaded = true;
             }
-            
+
             if (mask & LVIF_STATE) {
                 nmlvdi->item.state = 0;
             }
 
             if (mask & LVIF_IMAGE) {
                 nmlvdi->item.iImage = item->icon;
-            }           
-            
+            }
+
             if (mask & LVIF_TEXT) {
                 switch (nmlvdi->item.iSubItem) {
                     case COLUMN_NAME_IDX:
@@ -444,17 +517,18 @@ LRESULT contentViewNotify(NMHDR* nmhdr) {
                         }
                         nmlvdi->item.pszText = item->path;
                         break;
-                    }                       
+                    }
                 }
-            }           
+            }
             break;
         }
         case NM_RCLICK: {
             NMITEMACTIVATE* nmia = (NMITEMACTIVATE*)nmhdr;
+            cvSetActiveByHwnd(nmhdr->hwndFrom);
 
             if (nmia->iItem != -1 && nmia->iSubItem == 0) {
                 updateSelectedItems();
-                
+
                 bool show = true;
                 for (int i = 0; i < numSelectedItems; i++) {
                     if (!(selectedItems[i]->type == TYPE_FILE || selectedItems[i]->type == TYPE_DIR)) {
@@ -464,97 +538,107 @@ LRESULT contentViewNotify(NMHDR* nmhdr) {
                 }
                 if (show) createContextMenu(numSelectedItems == 1 ? MENU_SINGLE : MENU_MULTIPLE);
             }
-            else createContextMenu(MENU_EMPTY);         
+            else createContextMenu(MENU_EMPTY);
+            break;
+        }
+        case NM_CLICK: {
+            cvSetActiveByHwnd(nmhdr->hwndFrom);
             break;
         }
         case NM_DBLCLK: {
             NMITEMACTIVATE* nmia = (NMITEMACTIVATE*)nmhdr;
+            cvSetActiveByHwnd(nmhdr->hwndFrom);
             if (nmia->iItem == -1 || nmia->iSubItem != 0) break;
 
-            struct ListItem* item = &items[nmia->iItem];            
+            struct ListItem* item = &p->items[nmia->iItem];
             openFileNode(item->node);
             break;
         }
         case LVN_COLUMNCLICK: {
             LPNMLISTVIEW plvInfo = (LPNMLISTVIEW)nmhdr;
+            cvSetActiveByHwnd(nmhdr->hwndFrom);
 
-            if (plvInfo->iSubItem == sortColumnIdx) {
-                sortAscending = !sortAscending;
+            if (plvInfo->iSubItem == p->sortColumnIdx) {
+                p->sortAscending = !p->sortAscending;
             }
             else {
-                sortColumnIdx = plvInfo->iSubItem;
-                sortAscending = true;
+                p->sortColumnIdx = plvInfo->iSubItem;
+                p->sortAscending = true;
             }
 
-            refreshContentView();
+            refreshPane(p);
             break;
-        }       
+        }
     }
 
-    return 0;   
+    return 0;
 }
 
 static DWORD WINAPI searchTask(void* param) {
     struct SearchData* searchData = (struct SearchData*)param;
-    
+    struct Pane* p = searchData->pane;
+
     const int maxStackSize = 50;
     struct FileNode* stack[maxStackSize];
     int stackSize = 0;
-    stack[stackSize++] = currPathFileNode->children;
-    
+    stack[stackSize++] = p->currPath->children;
+
     wchar_t keyword[64] = {0};
     wchar_t name[64] = {0};
-    
+
     strToLower(searchData->keyword, keyword);
-    
-    while (stackSize > 0 && numItems < 10000 && searchData->active) {
+
+    while (stackSize > 0 && p->numItems < 10000 && searchData->active) {
         struct FileNode* node = stack[--stackSize];
         while (node && searchData->active) {
             strToLower(node->name, name);
             if (wcsstr(name, keyword)) {
-                SendMessage(hwndContentView, MSG_ADD_ITEM, 0, (LPARAM)node);
+                SendMessage(p->hwndList, MSG_ADD_ITEM, 0, (LPARAM)node);
             }
-            
-            if (numItems >= 10000) break;
-            
+
+            if (p->numItems >= 10000) break;
+
             if (node->type == TYPE_DIR && stackSize < maxStackSize) {
                 buildChildNodes(node, false);
                 if (node->children) stack[stackSize++] = node->children;
             }
-            node = node->sibling;       
+            node = node->sibling;
         }
     }
-    
-    SendMessage(hwndContentView, MSG_SEARCH_DONE, 0, 0);
+
+    SendMessage(p->hwndList, MSG_SEARCH_DONE, 0, 0);
     return 0;
 }
 
 void searchFor(wchar_t* keyword) {
     if (wcslen(keyword) == 0) return;
-    if (searchData != NULL && searchData->active) {
-        searchData->active = false;
+    struct Pane* p = activePane();
+    if (p->searchData != NULL && p->searchData->active) {
+        p->searchData->active = false;
         return;
     }
-    
-    clearContentView();
-    
+
+    clearPane(p);
+
     LVCOLUMN column = {0};
     column.mask = LVCF_WIDTH | LVCF_TEXT;
     column.cx = 250;
     column.pszText = lc_str.path;
-    ListView_InsertColumn(hwndContentView, COLUMN_PATH_IDX, &column);
-    UpdateWindow(hwndContentView);
-    
-    searchData = malloc(sizeof(struct SearchData));
-    searchData->keyword = keyword;
-    searchData->active = true;
-    searchData->canceled = false;
+    ListView_InsertColumn(p->hwndList, COLUMN_PATH_IDX, &column);
+    UpdateWindow(p->hwndList);
 
-    CreateThread(NULL, 0, searchTask, searchData, 0, NULL);
+    p->searchData = malloc(sizeof(struct SearchData));
+    p->searchData->keyword = keyword;
+    p->searchData->active = true;
+    p->searchData->canceled = false;
+    p->searchData->pane = p;
+
+    CreateThread(NULL, 0, searchTask, p->searchData, 0, NULL);
 }
 
 void setViewStyle(enum ViewStyle newViewStyle) {
-    LONG_PTR wndstyle = GetWindowLongPtr(hwndContentView, GWL_STYLE);
+    struct Pane* p = activePane();
+    LONG_PTR wndstyle = GetWindowLongPtr(p->hwndList, GWL_STYLE);
     wndstyle &= ~LVS_TYPEMASK;
 
     switch (newViewStyle) {
@@ -572,37 +656,43 @@ void setViewStyle(enum ViewStyle newViewStyle) {
             break;
     }
 
-    SetWindowLongPtr(hwndContentView, GWL_STYLE, wndstyle);
+    SetWindowLongPtr(p->hwndList, GWL_STYLE, wndstyle);
 
-    viewStyle = newViewStyle;
-    refreshContentView();
+    p->viewStyle = newViewStyle;
+    refreshPane(p);
 }
 
-void createLVColumns() {
+static void createLVColumns(HWND hwndList) {
     LVCOLUMN column = {0};
     column.mask = LVCF_WIDTH | LVCF_TEXT;
 
     column.cx = 220;
     column.pszText = lc_str.name;
-    ListView_InsertColumn(hwndContentView, COLUMN_NAME_IDX, &column);
+    ListView_InsertColumn(hwndList, COLUMN_NAME_IDX, &column);
 
     column.cx = 100;
     column.pszText = lc_str.type;
-    ListView_InsertColumn(hwndContentView, COLUMN_TYPE_IDX, &column);
+    ListView_InsertColumn(hwndList, COLUMN_TYPE_IDX, &column);
 
     column.cx = 60;
     column.pszText = lc_str.size;
-    ListView_InsertColumn(hwndContentView, COLUMN_SIZE_IDX, &column);
+    ListView_InsertColumn(hwndList, COLUMN_SIZE_IDX, &column);
 
     column.cx = 100;
     column.pszText = lc_str.date;
-    ListView_InsertColumn(hwndContentView, COLUMN_DATE_IDX, &column);
+    ListView_InsertColumn(hwndList, COLUMN_DATE_IDX, &column);
+}
+
+static HWND createOneContentView() {
+    HWND hwnd = CreateWindowEx(0, WC_LISTVIEW, NULL, WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_BORDER | LVS_OWNERDATA | LVS_REPORT | LVS_SHAREIMAGELISTS,
+                               0, 0, 0, 0, hwndMain, (HMENU)NULL, globalHInstance, NULL);
+    OrigWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)ContentViewWndProc);
+    createLVColumns(hwnd);
+    UpdateWindow(hwnd);
+    return hwnd;
 }
 
 void createContentView() {
-    hwndContentView = CreateWindowEx(0, WC_LISTVIEW, NULL, WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_BORDER | LVS_OWNERDATA | LVS_REPORT | LVS_SHAREIMAGELISTS,
-                                     0, 0, 0, 0, hwndMain, (HMENU)NULL, globalHInstance, NULL);
-
     cmiOpen.text = lc_str.open;
     cmiEdit.text = lc_str.edit;
     cmiCut.text = lc_str.cut;
@@ -615,10 +705,76 @@ void createContentView() {
     cmiNewFolder.text = lc_str.new_folder;
     cmiNewFile.text = lc_str.new_file;
     cmiUnloadISOImage.text = lc_str.unload_iso_image;
-    
-    OrigWndProc = (WNDPROC)SetWindowLongPtr(hwndContentView, GWLP_WNDPROC, (LONG_PTR)ContentViewWndProc);
-    createLVColumns();
-    UpdateWindow(hwndContentView);
+
+    for (int i = 0; i < NUM_PANES; i++) {
+        panes[i].hwndList = createOneContentView();
+        panes[i].currPath = NULL;
+        panes[i].items = NULL;
+        panes[i].numItems = 0;
+        panes[i].viewStyle = STYLE_DETAILS;
+        panes[i].sortColumnIdx = COLUMN_NAME_IDX;
+        panes[i].sortAscending = true;
+        panes[i].searchData = NULL;
+    }
+
+    // Pane 1 starts hidden until split view is enabled.
+    ShowWindow(panes[1].hwndList, SW_HIDE);
+    activeIdx = 0;
+}
+
+// Give each pane its own independent path chain. Called after initFileNodes()
+// (which leaves the global currPathFileNode pointing at Computer).
+void cvInitPanePaths() {
+    panes[0].currPath = currPathFileNode;                 // adopt the initial chain
+    panes[1].currPath = copyPathChain(currPathFileNode);  // independent copy
+    activeIdx = 0;
+    currPathFileNode = panes[0].currPath;
+}
+
+static void cvSetActiveByHwnd(HWND h) {
+    int idx = activeIdx;
+    for (int i = 0; i < NUM_PANES; i++) {
+        if (panes[i].hwndList == h) { idx = i; break; }
+    }
+    if (idx == activeIdx) return;
+    if (!splitOn) return;
+
+    // Swap the active pane's live path out to its slot, bring the new one in.
+    panes[activeIdx].currPath = currPathFileNode;
+    activeIdx = idx;
+    currPathFileNode = panes[activeIdx].currPath;
+
+    SetWindowText(hwndMain, currPathFileNode->name);
+    updateAddrButtons();
+    updateStatusbar(activePane());
+    cvInvalidatePaneFrames();
+}
+
+void cvToggleSplit() {
+    splitOn = !splitOn;
+
+    if (splitOn) {
+        ShowWindow(panes[1].hwndList, SW_SHOW);
+        // Populate pane 1 (it was never refreshed while hidden).
+        buildChildNodes(panes[1].currPath, false);
+        refreshPane(&panes[1]);
+    }
+    else {
+        // Collapsing: make pane 0 active and hide pane 1.
+        if (activeIdx == 1) {
+            panes[1].currPath = currPathFileNode;
+            activeIdx = 0;
+            currPathFileNode = panes[0].currPath;
+            SetWindowText(hwndMain, currPathFileNode->name);
+            updateAddrButtons();
+            updateStatusbar(activePane());
+        }
+        ShowWindow(panes[1].hwndList, SW_HIDE);
+    }
+
+    resizeControls();
+    cvInvalidatePaneFrames();
+    SetFocus(panes[activeIdx].hwndList);
 }
 
 void onMenuItemUpClick() {
@@ -632,19 +788,19 @@ void onMenuItemOpenClick() {
 void onMenuItemEditClick() {
     if (numSelectedItems == 1 && selectedItems[0]->type == TYPE_FILE) {
         static const wchar_t editorPath[] = L"C:\\windows\\notepad.exe";
-        
+
         wchar_t path[MAX_PATH] = {0};
         wchar_t parameters[MAX_PATH] = {0};
         getFileNodePath(selectedItems[0], path);
         swprintf_s(parameters, MAX_PATH, L"\"%ls\"", path);
         getFileNodePath(selectedItems[0]->parent, path);
-        ShellExecute(hwndMain, L"open", editorPath, parameters, path, SW_SHOW);     
-    }   
+        ShellExecute(hwndMain, L"open", editorPath, parameters, path, SW_SHOW);
+    }
 }
 
 void onMenuItemCutClick() {
     updateSelectedItems();
-    if (numSelectedItems > 0) cutFiles(selectedItems, numSelectedItems);    
+    if (numSelectedItems > 0) cutFiles(selectedItems, numSelectedItems);
 }
 
 void onMenuItemCopyClick() {
@@ -654,12 +810,12 @@ void onMenuItemCopyClick() {
 
 void onMenuItemCreateShortcutClick() {
     updateSelectedItems();
-    if (numSelectedItems > 0) createDesktopShortcuts(selectedItems, numSelectedItems);  
+    if (numSelectedItems > 0) createDesktopShortcuts(selectedItems, numSelectedItems);
 }
 
 void onMenuItemDeleteClick() {
     updateSelectedItems();
-    if (numSelectedItems > 0) deleteFiles(selectedItems, numSelectedItems); 
+    if (numSelectedItems > 0) deleteFiles(selectedItems, numSelectedItems);
 }
 
 void onMenuItemRenameClick() {
@@ -671,7 +827,7 @@ void onMenuItemRenameClick() {
             wcscat_s(newFilename, MAX_PATH, L"\\");
             wcscat_s(newFilename, MAX_PATH, result);
             free(result);
-            
+
             wchar_t oldFilename[MAX_PATH] = {0};
             getFileNodePath(selectedItems[0], oldFilename);
             MoveFileW(oldFilename, newFilename);
@@ -691,50 +847,51 @@ void onMenuItemPasteShortcutClick() {
     wchar_t path[MAX_PATH] = {0};
     getFileNodePath(currPathFileNode, path);
     if (!isPathExists(path)) return;
-    pasteShortcuts(path);   
+    pasteShortcuts(path);
 }
 
 void onMenuItemNewFolderClick() {
     wchar_t path[MAX_PATH] = {0};
     getFileNodePath(currPathFileNode, path);
     if (!isPathExists(path)) return;
-    
+
     wchar_t* result = InputDialog(lc_str.new_folder, lc_str.enter_folder_name, NULL, false);
     if (result) {
         wcscat_s(path, MAX_PATH, L"\\");
         wcscat_s(path, MAX_PATH, result);
         free(result);
-        
+
         if (!isPathExists(path)) {
             CreateDirectory(path, NULL);
-            navigateRefresh();          
+            navigateRefresh();
         }
-    }   
+    }
 }
 
 void onMenuItemNewFileClick() {
     wchar_t path[MAX_PATH] = {0};
     getFileNodePath(currPathFileNode, path);
     if (!isPathExists(path)) return;
-    
+
     wchar_t* result = InputDialog(lc_str.new_file, lc_str.enter_file_name, NULL, false);
     if (result) {
         wcscat_s(path, MAX_PATH, L"\\");
         wcscat_s(path, MAX_PATH, result);
         free(result);
-        
+
         if (!isPathExists(path)) {
             HANDLE handle = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
             if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
-            navigateRefresh();  
+            navigateRefresh();
         }
-    }       
+    }
 }
 
 void onMenuItemSelectAllClick() {
-    ListView_SetItemState(hwndContentView, -1, 0, LVIS_SELECTED);
-    ListView_SetItemState(hwndContentView, -1, LVIS_SELECTED, LVIS_SELECTED);
-    SetFocus(hwndContentView);
+    HWND h = activePane()->hwndList;
+    ListView_SetItemState(h, -1, 0, LVIS_SELECTED);
+    ListView_SetItemState(h, -1, LVIS_SELECTED, LVIS_SELECTED);
+    SetFocus(h);
 }
 
 static void onMenuItemLoadISOImageClick() {
@@ -742,23 +899,23 @@ static void onMenuItemLoadISOImageClick() {
         MessageBox(NULL, lc_str.msg_invalid_iso_image_file, lc_str.alert, MB_OK);
         return;
     }
-    
+
     wchar_t currentISOPath[MAX_PATH] = {0};
     HKEY hkey;
     getFileNodePath(selectedItems[0], currentISOPath);
-    
-    if (!isPathExists(currentISOPath) || !(hasFileExtension(currentISOPath, L"iso") || 
+
+    if (!isPathExists(currentISOPath) || !(hasFileExtension(currentISOPath, L"iso") ||
                                            hasFileExtension(currentISOPath, L"bin") ||
                                            hasFileExtension(currentISOPath, L"cue"))) {
         MessageBox(NULL, lc_str.msg_invalid_iso_image_file, lc_str.alert, MB_OK);
         return;
     }
-    
+
     if (RegCreateKey(HKEY_CURRENT_USER, L"SOFTWARE\\Winlator\\WFM\\CurrentISOPath", &hkey) == ERROR_SUCCESS) {
         RegSetValue(hkey, NULL, REG_SZ, currentISOPath, (wcslen(currentISOPath) + 1) * sizeof(wchar_t));
         RegCloseKey(hkey);
     }
-    
+
     clearDirectory(L"X:");
     extractFilesFromISOImage(currentISOPath, L"X:\\");
 }
@@ -772,14 +929,14 @@ static void onMenuItemUnloadISOImageClick() {
 static int compareType(const void* a, const void* b) {
     struct ListItem* ia = (struct ListItem*)a;
     struct ListItem* ib = (struct ListItem*)b;
-    return sortAscending ? ia->node->type - ib->node->type : ib->node->type - ia->node->type;
+    return g_sortPane->sortAscending ? ia->node->type - ib->node->type : ib->node->type - ia->node->type;
 }
 
 static int compareName(const void* a, const void* b) {
     struct ListItem* ia = (struct ListItem*)a;
     struct ListItem* ib = (struct ListItem*)b;
     int res = compareType(a, b);
-    if (res == 0) res = sortAscending ? wcscoll(ia->node->name, ib->node->name) : wcscoll(ib->node->name, ia->node->name);
+    if (res == 0) res = g_sortPane->sortAscending ? wcscoll(ia->node->name, ib->node->name) : wcscoll(ib->node->name, ia->node->name);
     return res;
 }
 
@@ -787,7 +944,7 @@ static int compareSize(const void* a, const void* b) {
     struct ListItem* ia = (struct ListItem*)a;
     struct ListItem* ib = (struct ListItem*)b;
     int res = compareType(a, b);
-    if (res == 0) res = sortAscending ? ia->size - ib->size : ib->size - ia->size;
+    if (res == 0) res = g_sortPane->sortAscending ? ia->size - ib->size : ib->size - ia->size;
     return res;
 }
 
@@ -795,63 +952,70 @@ static int compareDate(const void* a, const void* b) {
     struct ListItem* ia = (struct ListItem*)a;
     struct ListItem* ib = (struct ListItem*)b;
     int res = compareType(a, b);
-    if (res == 0) res = sortAscending ? CompareFileTime(&ia->modifiedTime, &ib->modifiedTime) : CompareFileTime(&ib->modifiedTime, &ia->modifiedTime);
+    if (res == 0) res = g_sortPane->sortAscending ? CompareFileTime(&ia->modifiedTime, &ib->modifiedTime) : CompareFileTime(&ib->modifiedTime, &ia->modifiedTime);
     return res;
 }
 
-void sortItems() {
-    switch (sortColumnIdx) {
+static void sortItems(struct Pane* p) {
+    g_sortPane = p;
+    switch (p->sortColumnIdx) {
         case COLUMN_NAME_IDX:
-            qsort(items, numItems, sizeof(struct ListItem), compareName);
+            qsort(p->items, p->numItems, sizeof(struct ListItem), compareName);
             break;
         case COLUMN_TYPE_IDX:
-            qsort(items, numItems, sizeof(struct ListItem), compareType);
+            qsort(p->items, p->numItems, sizeof(struct ListItem), compareType);
             break;
         case COLUMN_SIZE_IDX:
-            qsort(items, numItems, sizeof(struct ListItem), compareSize);
+            qsort(p->items, p->numItems, sizeof(struct ListItem), compareSize);
             break;
         case COLUMN_DATE_IDX:
-            qsort(items, numItems, sizeof(struct ListItem), compareDate);
+            qsort(p->items, p->numItems, sizeof(struct ListItem), compareDate);
             break;
     }
 }
 
-void refreshContentView() {
-    if (searchData != NULL && searchData->active) {
-        searchData->active = false;     
-        searchData->canceled = true;
+static void refreshPane(struct Pane* p) {
+    if (p->searchData != NULL && p->searchData->active) {
+        p->searchData->active = false;
+        p->searchData->canceled = true;
         return;
     }
-    
-    clearContentView();
-    UpdateWindow(hwndContentView);
-    
-    struct FileNode* child = currPathFileNode->children;
-    
-    numItems = getChildNodeCount(currPathFileNode);
-    items = calloc(numItems, sizeof(struct ListItem));
+
+    clearPane(p);
+    UpdateWindow(p->hwndList);
+
+    struct FileNode* child = p->currPath->children;
+
+    p->numItems = getChildNodeCount(p->currPath);
+    p->items = calloc(p->numItems, sizeof(struct ListItem));
     int index = 0;
-    
+
     while (child) {
-        struct ListItem* item = &items[index++];
+        struct ListItem* item = &p->items[index++];
         item->node = child;
         item->loaded = false;
 
         fillFileInfo(child, item);
-        
+
         child = child->sibling;
     }
 
     HIMAGELIST himlBig, himlSmall;
     Shell_GetImageLists(&himlBig, &himlSmall);
-    
-    if (viewStyle == STYLE_LARGE_ICON) {
-        ListView_SetImageList(hwndContentView, himlBig, LVSIL_NORMAL);
-    }
-    else ListView_SetImageList(hwndContentView, himlSmall, LVSIL_SMALL);
 
-    if (sortColumnIdx != -1) sortItems();
-    ListView_SetItemCountEx(hwndContentView, numItems, 0);
-    
-    updateStatusbar();  
+    if (p->viewStyle == STYLE_LARGE_ICON) {
+        ListView_SetImageList(p->hwndList, himlBig, LVSIL_NORMAL);
+    }
+    else ListView_SetImageList(p->hwndList, himlSmall, LVSIL_SMALL);
+
+    if (p->sortColumnIdx != -1) sortItems(p);
+    ListView_SetItemCountEx(p->hwndList, p->numItems, 0);
+
+    updateStatusbar(p);
+}
+
+void refreshContentView() {
+    // Keep the active pane's stored path in sync with the global cursor, then refresh it.
+    activePane()->currPath = currPathFileNode;
+    refreshPane(activePane());
 }

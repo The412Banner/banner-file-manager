@@ -15,6 +15,7 @@ struct FileNode {
 void initFileNodes();
 wchar_t* getDesktopPath();
 void setCurrPathFileNode(struct FileNode* node);
+struct FileNode* copyPathChain(struct FileNode* node);
 void setCurrPathFromString(wchar_t* path);
 int getChildNodeCount(struct FileNode* parent);
 int getFileNodePath(struct FileNode* node, wchar_t* path);

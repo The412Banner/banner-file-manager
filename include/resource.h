@@ -41,6 +41,7 @@
 #define ID_FILE_EXIT 309
 #define ID_EDIT_PASTE_SHORTCUT 310
 #define ID_EDIT_SELECT_ALL 311
+#define ID_VIEW_SPLIT 312
 
 #ifndef IDC_STATIC
 #define IDC_STATIC -1
@@ -78,6 +79,7 @@ struct LC_STR {
     wchar_t* small_icons;
     wchar_t* list;
     wchar_t* details;
+    wchar_t* split_view;
     wchar_t* help;
     wchar_t* about;
     wchar_t* ok;

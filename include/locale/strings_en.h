@@ -28,6 +28,7 @@ static inline void loadStrings_en() {
     lc_str.small_icons = L"Small Icons";
     lc_str.list = L"List";
     lc_str.details = L"Details";
+    lc_str.split_view = L"Split View";
     lc_str.help = L"Help";
     lc_str.about = L"About";
     lc_str.ok = L"OK";

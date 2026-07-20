@@ -3,7 +3,6 @@
 static const wchar_t mainWndClass[] = L"WFM-MainWnd";
 
 extern struct FileNode* currPathFileNode;
-extern HWND hwndContentView;
 extern HWND hwndNavbar;
 extern HWND hwndSizebar;
 extern HWND hwndStatusbar;
@@ -13,6 +12,15 @@ extern HWND hwndTreeview;
 HINSTANCE globalHInstance = NULL;
 HWND hwndMain = NULL;
 struct LC_STR lc_str = {0};
+
+// Dual-pane layout: each pane's list view sits inset by PANE_FRAME inside its cell;
+// the surrounding band is painted accent (active) or background (inactive) in WM_PAINT.
+#define PANE_FRAME 2
+static RECT paneCell[2] = {0};
+
+void cvInvalidatePaneFrames(void) {
+    for (int i = 0; i < 2; i++) InvalidateRect(hwndMain, &paneCell[i], TRUE);
+}
 
 void GetWindowRectInParent(HWND hwnd, RECT* rect) {
     GetWindowRect(hwnd, rect);
@@ -82,8 +90,11 @@ void mainMenuCommand(WPARAM wParam) {
             break;
         case ID_VIEW_DETAILS:
             setViewStyle(STYLE_DETAILS);
-            break;                      
-    }   
+            break;
+        case ID_VIEW_SPLIT:
+            cvToggleSplit();
+            break;
+    }
 }
 
 void resizeControls() {
@@ -112,9 +123,32 @@ void resizeControls() {
     
     const int sizebarWidth = 5;
     SetWindowPos(hwndSizebar, NULL, treeviewRect.right, navbarRect.bottom, sizebarWidth, treeviewHeight, SWP_NOZORDER);
-    
+
     int contentViewX = treeviewRect.right + sizebarWidth;
-    SetWindowPos(hwndContentView, NULL, contentViewX, navbarRect.bottom, rect.right - contentViewX, treeviewHeight, SWP_NOZORDER);  
+    int contentY = navbarRect.bottom;
+    int contentW = rect.right - contentViewX;
+    int contentH = treeviewHeight;
+
+    bool split = cvSplitOn();
+    int inset = split ? PANE_FRAME : 0;
+
+    if (split) {
+        const int gap = 6;
+        int half = (contentW - gap) / 2;
+        paneCell[0] = (RECT){contentViewX, contentY, contentViewX + half, contentY + contentH};
+        paneCell[1] = (RECT){contentViewX + half + gap, contentY, contentViewX + contentW, contentY + contentH};
+    }
+    else {
+        paneCell[0] = (RECT){contentViewX, contentY, contentViewX + contentW, contentY + contentH};
+        paneCell[1] = (RECT){0, 0, 0, 0};
+    }
+
+    int nPanes = split ? 2 : 1;
+    for (int i = 0; i < nPanes; i++) {
+        RECT c = paneCell[i];
+        SetWindowPos(cvPaneHwnd(i), NULL, c.left + inset, c.top + inset,
+                     (c.right - c.left) - 2 * inset, (c.bottom - c.top) - 2 * inset, SWP_NOZORDER);
+    }
 }
 
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -122,7 +156,23 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         case WM_SIZE: {
             resizeControls();
             break;
-        }   
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            if (cvSplitOn()) {
+                HBRUSH accent = CreateSolidBrush(RGB(0, 120, 215));
+                HBRUSH normal = GetSysColorBrush(COLOR_BTNFACE);
+                for (int i = 0; i < 2; i++) {
+                    // Children are clipped (WS_CLIPCHILDREN), so this only paints the
+                    // PANE_FRAME band around each list view.
+                    FillRect(hdc, &paneCell[i], (i == cvActiveIdx()) ? accent : normal);
+                }
+                DeleteObject(accent);
+            }
+            EndPaint(hwnd, &ps);
+            break;
+        }
         case WM_COMMAND: {
             if (lParam == 0 && HIWORD(wParam) == 0) {
                 mainMenuCommand(wParam);
@@ -154,14 +204,14 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         case WM_NOTIFY: {
             NMHDR* nmhdr = (NMHDR*)lParam;
-            if (nmhdr->hwndFrom == hwndContentView) {
+            if (cvIsContentView(nmhdr->hwndFrom)) {
                 return contentViewNotify(nmhdr);
             }
             else if (nmhdr->hwndFrom == hwndTreeview) {
                 return treeviewNotify(nmhdr);
             }
             else return 0;
-        }       
+        }
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
@@ -230,7 +280,9 @@ static void createMainMenu() {
     AppendMenu(hmView, MF_STRING, ID_VIEW_SMALLICONS, lc_str.small_icons);
     AppendMenu(hmView, MF_STRING, ID_VIEW_LIST, lc_str.list);
     AppendMenu(hmView, MF_STRING, ID_VIEW_DETAILS, lc_str.details);
-    
+    AppendMenu(hmView, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hmView, MF_STRING, ID_VIEW_SPLIT, lc_str.split_view);
+
     HMENU hmHelp = CreatePopupMenu();
     AppendMenu(hmHelp, MF_STRING, ID_HELP_ABOUT, lc_str.about);
     
@@ -287,8 +339,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     createTreeview();
     createSizebar();
     createContentView();
+    cvInitPanePaths();
     createStatusbar();
-    
+
     setViewStyle(STYLE_DETAILS);
     int treeviewWidth = hwndWidth * 0.2f;
     SetWindowPos(hwndTreeview, NULL, 0, 0, treeviewWidth, 0, SWP_NOZORDER | SWP_NOMOVE);    
