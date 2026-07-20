@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <wingdi.h>
+#include <uxtheme.h>
 #include <winnls.h>
 #include <wchar.h>
 #include <strsafe.h>
@@ -65,5 +66,6 @@ void navigateRefresh();
 void openFileNode(struct FileNode* node);
 void GetWindowRectInParent(HWND hwnd, RECT* rect);
 void resizeControls();
+HFONT getUIFont(void);
 
 #endif

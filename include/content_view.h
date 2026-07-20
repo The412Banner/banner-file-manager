@@ -26,6 +26,8 @@ bool cvSplitOn();
 
 void onMenuItemUpClick();
 void onMenuItemOpenClick();
+void onMenuItemOpenAsAdminClick();
+void onMenuItemOpenWithClick();
 void onMenuItemEditClick();
 void onMenuItemCutClick();
 void onMenuItemCopyClick();

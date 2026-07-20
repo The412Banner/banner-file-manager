@@ -54,7 +54,9 @@ struct SearchData {
 struct ContextMenuItem {
     wchar_t* text;
     void(*proc)();
-    wchar_t* cmdData;
+    wchar_t* cmdData;       // legacy: run via cmd /C
+    wchar_t* openExe;       // "Open with" app: ShellExecute this exe with openFile
+    wchar_t* openFile;      // the file to hand to openExe (heap; freed with the item)
 };
 
 static void onMenuItemLoadISOImageClick();
@@ -73,6 +75,8 @@ static struct ContextMenuItem cmiNewFolder = {NULL, &onMenuItemNewFolderClick, N
 static struct ContextMenuItem cmiNewFile = {NULL, &onMenuItemNewFileClick, NULL};
 static struct ContextMenuItem cmiLoadISOImage = {NULL, &onMenuItemLoadISOImageClick, NULL};
 static struct ContextMenuItem cmiUnloadISOImage = {NULL, &onMenuItemUnloadISOImageClick, NULL};
+static struct ContextMenuItem cmiOpenAsAdmin = {NULL, &onMenuItemOpenAsAdminClick, NULL};
+static struct ContextMenuItem cmiChooseProgram = {NULL, &onMenuItemOpenWithClick, NULL};
 
 static WNDPROC OrigWndProc;
 static HMENU hContextMenu;
@@ -85,8 +89,18 @@ static struct Pane* g_sortPane = NULL;
 static struct FileNode** selectedItems = NULL;
 static int numSelectedItems = 0;
 
-static struct ContextMenuItem* menuItems = NULL;
+static struct ContextMenuItem** menuItems = NULL;
 static int numMenuItems = 0;
+
+// Append a fresh, individually-allocated context-menu item. Returning a stable pointer
+// (rather than &menuItems[i]) keeps menu dwItemData valid across later reallocs.
+static struct ContextMenuItem* addMenuItemSlot() {
+    int index = numMenuItems++;
+    menuItems = realloc(menuItems, numMenuItems * sizeof(struct ContextMenuItem*));
+    struct ContextMenuItem* it = calloc(1, sizeof(struct ContextMenuItem));
+    menuItems[index] = it;
+    return it;
+}
 
 extern struct FileNode* currPathFileNode;
 extern HINSTANCE globalHInstance;
@@ -165,10 +179,14 @@ static void updateStatusbar(struct Pane* p) {
 static void freeMenuItems() {
     if (menuItems) {
         for (int i = 0; i < numMenuItems; i++) {
-            if (menuItems[i].cmdData) {
-                free(menuItems[i].cmdData);
-                menuItems[i].cmdData = NULL;
+            struct ContextMenuItem* it = menuItems[i];
+            if (it->cmdData) free(it->cmdData);
+            if (it->openExe) {
+                free(it->openExe);
+                if (it->openFile) free(it->openFile);
+                if (it->text) free(it->text);
             }
+            free(it);
         }
         free(menuItems);
         menuItems = NULL;
@@ -229,7 +247,13 @@ LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 GetMenuItemInfo(hContextMenu, LOWORD(wParam), FALSE, &item);
                 struct ContextMenuItem* cmItem = (struct ContextMenuItem*)item.dwItemData;
 
-                if (cmItem->cmdData) {
+                if (cmItem->openExe) {
+                    // "Open with" a specific app: launch it (non-blocking) with the file.
+                    wchar_t params[MAX_PATH + 4] = {0};
+                    swprintf_s(params, MAX_PATH + 4, L"\"%ls\"", cmItem->openFile);
+                    ShellExecuteW(hwndMain, L"open", cmItem->openExe, params, NULL, SW_SHOW);
+                }
+                else if (cmItem->cmdData) {
                     wchar_t command[MAX_PATH];
                     wcscpy_s(command, MAX_PATH, L"/C ");
                     wcscat_s(command, MAX_PATH, cmItem->cmdData);
@@ -310,7 +334,6 @@ static void addContextMenuItem(HMENU hMenu, int id, struct ContextMenuItem* cmIt
 }
 
 static void createContextMenuFromRegistry(int* id) {
-    freeMenuItems();
     HKEY hkeyContextMenu, hkeyItem;
     if (RegOpenKey(HKEY_CURRENT_USER, L"SOFTWARE\\Winlator\\WFM\\ContextMenu", &hkeyContextMenu) != ERROR_SUCCESS) return;
 
@@ -340,10 +363,7 @@ static void createContextMenuFromRegistry(int* id) {
                 itemValueLen = MAX_PATH;
                 if (RegEnumValue(hkeyItem, j++, subitemName, &itemNameLen, NULL, NULL, (LPBYTE)itemValue, &itemValueLen) != ERROR_SUCCESS) break;
 
-                int index = numMenuItems++;
-                menuItems = realloc(menuItems, numMenuItems * sizeof(struct ContextMenuItem));
-
-                struct ContextMenuItem* cmItem = &menuItems[index];
+                struct ContextMenuItem* cmItem = addMenuItemSlot();
                 cmItem->text = subitemName;
                 cmItem->proc = NULL;
 
@@ -416,7 +436,100 @@ static void createCDDriveContextMenu(int* id) {
     InsertMenuItem(hContextMenu, -1, TRUE, &item);
 }
 
+// Pull the executable path out of a registered "shell\open\command" value, e.g.
+//   "C:\Program Files\App\app.exe" "%1"   ->   C:\Program Files\App\app.exe
+static void extractExeFromCommand(const wchar_t* cmd, wchar_t* exeOut) {
+    exeOut[0] = L'\0';
+    const wchar_t* p = cmd;
+    while (*p == L' ') p++;
+
+    const wchar_t* start;
+    const wchar_t* end;
+    if (*p == L'"') {
+        start = ++p;
+        end = wcschr(p, L'"');
+        if (!end) return;
+    }
+    else {
+        start = p;
+        end = wcschr(p, L' ');
+        if (!end) end = p + wcslen(p);
+    }
+
+    int n = (int)(end - start);
+    if (n <= 0 || n >= MAX_PATH) return;
+    wcsncpy(exeOut, start, n);
+    exeOut[n] = L'\0';
+}
+
+// "Open with" submenu: best-effort list of registered applications (HKCR\Applications)
+// plus a "Choose another program..." entry that opens Wine's Open-With dialog. Robust when
+// the registry list is sparse (still offers the dialog).
+static void createOpenWithMenu(int* id) {
+    wchar_t filePath[MAX_PATH] = {0};
+    getFileNodePath(selectedItems[0], filePath);
+
+    HMENU hSubmenu = CreatePopupMenu();
+    int count = 0;
+
+    HKEY hApps;
+    if (RegOpenKeyW(HKEY_CLASSES_ROOT, L"Applications", &hApps) == ERROR_SUCCESS) {
+        wchar_t appName[128];
+        DWORD i = 0, len;
+        while (count < 12) {
+            len = 128;
+            if (RegEnumKeyExW(hApps, i++, appName, &len, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+
+            wchar_t cmdKey[300] = {0};
+            swprintf_s(cmdKey, 300, L"Applications\\%ls\\shell\\open\\command", appName);
+            HKEY hCmd;
+            if (RegOpenKeyW(HKEY_CLASSES_ROOT, cmdKey, &hCmd) != ERROR_SUCCESS) continue;
+
+            wchar_t cmdVal[MAX_PATH] = {0};
+            DWORD cl = sizeof(cmdVal);
+            wchar_t exe[MAX_PATH] = {0};
+            if (RegQueryValueExW(hCmd, NULL, NULL, NULL, (LPBYTE)cmdVal, &cl) == ERROR_SUCCESS) {
+                extractExeFromCommand(cmdVal, exe);
+            }
+            RegCloseKey(hCmd);
+            if (!exe[0] || !isPathExists(exe)) continue;
+
+            struct ContextMenuItem* cmItem = addMenuItemSlot();
+            cmItem->text = wcsdup(appName);
+            cmItem->proc = NULL;
+            cmItem->cmdData = NULL;
+            cmItem->openExe = wcsdup(exe);
+            cmItem->openFile = wcsdup(filePath);
+
+            addContextMenuItem(hSubmenu, (*id)++, cmItem, false);
+            count++;
+        }
+        RegCloseKey(hApps);
+    }
+
+    if (count > 0) {
+        MENUITEMINFO sep = {0};
+        sep.cbSize = sizeof(MENUITEMINFO);
+        sep.fMask = MIIM_TYPE;
+        sep.fType = MFT_SEPARATOR;
+        InsertMenuItem(hSubmenu, -1, TRUE, &sep);
+    }
+    addContextMenuItem(hSubmenu, (*id)++, &cmiChooseProgram, false);
+
+    MENUITEMINFO item = {0};
+    item.cbSize = sizeof(MENUITEMINFO);
+    item.fMask = MIIM_TYPE | MIIM_ID | MIIM_SUBMENU;
+    item.fType = MFT_STRING;
+    item.dwTypeData = lc_str.open_with;
+    item.cch = wcslen(lc_str.open_with);
+    item.wID = ++(*id);
+    item.hSubMenu = hSubmenu;
+    InsertMenuItem(hContextMenu, -1, TRUE, &item);
+}
+
 static void createContextMenu(enum ContextMenuType type) {
+    freeMenuItems();
+
     HMENU hMenu = CreatePopupMenu();
     hContextMenu = hMenu;
 
@@ -426,6 +539,8 @@ static void createContextMenu(enum ContextMenuType type) {
         if (type == MENU_SINGLE) {
             if (selectedItems[0]->type == TYPE_FILE) {
                 addContextMenuItem(hMenu, id++, &cmiOpen, false);
+                addContextMenuItem(hMenu, id++, &cmiOpenAsAdmin, false);
+                createOpenWithMenu(&id);
                 addContextMenuItem(hMenu, id++, &cmiEdit, true);
                 createCDDriveContextMenu(&id);
                 createContextMenuFromRegistry(&id);
@@ -687,6 +802,10 @@ static HWND createOneContentView() {
     HWND hwnd = CreateWindowEx(0, WC_LISTVIEW, NULL, WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_BORDER | LVS_OWNERDATA | LVS_REPORT | LVS_SHAREIMAGELISTS,
                                0, 0, 0, 0, hwndMain, (HMENU)NULL, globalHInstance, NULL);
     OrigWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)ContentViewWndProc);
+    SendMessage(hwnd, WM_SETFONT, (WPARAM)getUIFont(), TRUE);
+    // Modern list behaviour: full-row selection, flicker-free scrolling, tidy label tips.
+    ListView_SetExtendedListViewStyle(hwnd, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+    SetWindowTheme(hwnd, L"Explorer", NULL);
     createLVColumns(hwnd);
     UpdateWindow(hwnd);
     return hwnd;
@@ -705,6 +824,8 @@ void createContentView() {
     cmiNewFolder.text = lc_str.new_folder;
     cmiNewFile.text = lc_str.new_file;
     cmiUnloadISOImage.text = lc_str.unload_iso_image;
+    cmiOpenAsAdmin.text = lc_str.open_as_admin;
+    cmiChooseProgram.text = lc_str.choose_program;
 
     for (int i = 0; i < NUM_PANES; i++) {
         panes[i].hwndList = createOneContentView();
@@ -783,6 +904,34 @@ void onMenuItemUpClick() {
 
 void onMenuItemOpenClick() {
     if (numSelectedItems == 1) openFileNode(selectedItems[0]);
+}
+
+void onMenuItemOpenAsAdminClick() {
+    if (numSelectedItems == 1 && selectedItems[0]->type == TYPE_FILE) {
+        wchar_t path[MAX_PATH] = {0};
+        wchar_t parentPath[MAX_PATH] = {0};
+        getFileNodePath(selectedItems[0], path);
+        getFileNodePath(selectedItems[0]->parent, parentPath);
+        // "runas" verb requests elevation. Wine's elevation is largely cosmetic, but
+        // apps that gate on the verb / the elevated flag get what they expect.
+        ShellExecuteW(hwndMain, L"runas", path, NULL, parentPath, SW_SHOW);
+    }
+}
+
+void onMenuItemOpenWithClick() {
+    if (numSelectedItems == 1 && selectedItems[0]->type == TYPE_FILE) {
+        wchar_t path[MAX_PATH] = {0};
+        getFileNodePath(selectedItems[0], path);
+        // "openas" verb → Wine's "Open With" dialog (lists compatible programs + browse).
+        SHELLEXECUTEINFOW sei = {0};
+        sei.cbSize = sizeof(sei);
+        sei.fMask = SEE_MASK_INVOKEIDLIST;
+        sei.hwnd = hwndMain;
+        sei.lpVerb = L"openas";
+        sei.lpFile = path;
+        sei.nShow = SW_SHOW;
+        ShellExecuteExW(&sei);
+    }
 }
 
 void onMenuItemEditClick() {

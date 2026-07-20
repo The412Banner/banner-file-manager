@@ -22,6 +22,18 @@ void cvInvalidatePaneFrames(void) {
     for (int i = 0; i < 2; i++) InvalidateRect(hwndMain, &paneCell[i], TRUE);
 }
 
+// Shared modern UI font (Segoe UI). Larger than the classic GUI font so rows are
+// taller and easier to hit on a touchscreen, and reads more like Windows 11.
+static HFONT uiFont = NULL;
+HFONT getUIFont(void) {
+    if (!uiFont) {
+        uiFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    }
+    return uiFont;
+}
+
 void GetWindowRectInParent(HWND hwnd, RECT* rect) {
     GetWindowRect(hwnd, rect);
     MapWindowPoints(HWND_DESKTOP, GetParent(hwnd), (LPPOINT)rect, 2);

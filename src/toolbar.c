@@ -84,8 +84,9 @@ void createToolButtons() {
 void createToolbar() {
     hwndToolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE | TBSTYLE_FLAT | CCS_NORESIZE, 
                                  0, 0, 0, 0, hwndMain, NULL, globalHInstance, NULL);
+    SendMessage(hwndToolbar, WM_SETFONT, (WPARAM)getUIFont(), TRUE);
     createToolButtons();
-    
+
     OrigWndProc = (WNDPROC)SetWindowLongPtr(hwndToolbar, GWLP_WNDPROC, (LONG_PTR)ToolbarWndProc);
     UpdateWindow(hwndToolbar);
 }

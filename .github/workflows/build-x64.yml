@@ -38,7 +38,7 @@ jobs:
           $RC $INCLUDES -I./res -i res/resource.rc -o obj/resource.o
 
           # Link against the bundled x64 libcdio.dll (ISO-mount support), like upstream.
-          $CC -o wfm.exe obj/*.o -s -lcomctl32 -lgdi32 -lole32 -luuid ./libcdio.dll -Wl,--subsystem,windows
+          $CC -o wfm.exe obj/*.o -s -lcomctl32 -lgdi32 -lole32 -luuid -luxtheme ./libcdio.dll -Wl,--subsystem,windows
 
           file wfm.exe
           ls -l wfm.exe libcdio.dll

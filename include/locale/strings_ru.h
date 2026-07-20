@@ -35,6 +35,9 @@ static inline void loadStrings_ru() {
     lc_str.cancel = L"Отмена";
     lc_str.loading = L"Загрузка...";
     lc_str.open = L"Открыть";
+    lc_str.open_as_admin = L"Запуск от имени администратора";
+    lc_str.open_with = L"Открыть с помощью";
+    lc_str.choose_program = L"Выбрать другую программу...";
     lc_str.create_shortcut = L"Создать Ярлык";
     lc_str.delete = L"Удалить";
     lc_str.rename = L"Переименовать";

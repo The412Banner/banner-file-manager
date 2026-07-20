@@ -86,6 +86,9 @@ struct LC_STR {
     wchar_t* cancel;
     wchar_t* loading;
     wchar_t* open;
+    wchar_t* open_as_admin;
+    wchar_t* open_with;
+    wchar_t* choose_program;
     wchar_t* create_shortcut;
     wchar_t* delete;
     wchar_t* rename;

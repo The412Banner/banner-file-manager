@@ -35,6 +35,9 @@ static inline void loadStrings_pt() {
     lc_str.cancel = L"Cancelar";
     lc_str.loading = L"Carregando...";
     lc_str.open = L"Abrir";
+    lc_str.open_as_admin = L"Abrir como administrador";
+    lc_str.open_with = L"Abrir com";
+    lc_str.choose_program = L"Escolher outro programa...";
     lc_str.create_shortcut = L"Criar Atalho";
     lc_str.delete = L"Excluir";
     lc_str.rename = L"Renomear";
