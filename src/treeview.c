@@ -149,7 +149,6 @@ void createTreeview() {
     hwndTreeview = CreateWindowEx(0, WC_TREEVIEW, NULL, WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS |                              TVS_SHOWSELALWAYS, 0, 0, 0, 0, hwndMain, (HMENU)NULL, globalHInstance, NULL);
 
     SendMessage(hwndTreeview, WM_SETFONT, (WPARAM)getUIFont(), TRUE);
-    SetWindowTheme(hwndTreeview, L"Explorer", NULL);
 
     updateTreeItems();
     UpdateWindow(hwndTreeview);

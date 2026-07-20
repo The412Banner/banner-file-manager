@@ -21,6 +21,8 @@ void cvToggleSplit();
 bool cvIsContentView(HWND h);
 HWND cvActiveHwnd();
 HWND cvPaneHwnd(int i);
+HWND cvPaneLabel(int i);
+bool cvActivatePaneByLabel(HWND h);
 int cvActiveIdx();
 bool cvSplitOn();
 

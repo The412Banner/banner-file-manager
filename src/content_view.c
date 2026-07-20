@@ -35,6 +35,7 @@ struct ListItem {
 // LVN_GETDISPINFO on repaint), so the backing data must be resolvable per HWND.
 struct Pane {
     HWND hwndList;
+    HWND hwndPathLabel;             // per-pane path bar (shown only in split view)
     struct FileNode* currPath;      // this pane's path chain (independent per pane)
     struct ListItem* items;
     int numItems;
@@ -111,6 +112,7 @@ extern HWND hwndMain;
 // forward declarations (defined later in this file / in main.c)
 static void refreshPane(struct Pane* p);
 static void cvSetActiveByHwnd(HWND h);
+static void updatePaneLabel(struct Pane* p);
 void cvInvalidatePaneFrames(void); // main.c
 
 static struct Pane* activePane() {
@@ -146,6 +148,31 @@ bool cvIsContentView(HWND h) {
         if (panes[i].hwndList == h) return true;
     }
     return false;
+}
+
+HWND cvPaneLabel(int i) {
+    return (i >= 0 && i < NUM_PANES) ? panes[i].hwndPathLabel : NULL;
+}
+
+// A pane's path bar was clicked -> make that pane active. Returns true if h was a label.
+bool cvActivatePaneByLabel(HWND h) {
+    for (int i = 0; i < NUM_PANES; i++) {
+        if (panes[i].hwndPathLabel == h) {
+            cvSetActiveByHwnd(panes[i].hwndList);
+            SetFocus(panes[i].hwndList);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void updatePaneLabel(struct Pane* p) {
+    if (!p->hwndPathLabel || !p->currPath) return;
+    wchar_t path[MAX_PATH] = {0};
+    getFileNodePath(p->currPath, path);
+    wchar_t label[MAX_PATH + 2] = {0};
+    swprintf_s(label, MAX_PATH + 2, L" %ls", path[0] ? path : p->currPath->name);
+    SetWindowText(p->hwndPathLabel, label);
 }
 
 static void fillFileInfo(struct FileNode* node, struct ListItem* item) {
@@ -811,19 +838,20 @@ static void createLVColumns(HWND hwndList) {
     LVCOLUMN column = {0};
     column.mask = LVCF_WIDTH | LVCF_TEXT;
 
-    column.cx = 220;
+    // Kept compact so all four columns fit inside a split-view pane without a horizontal scrollbar.
+    column.cx = 185;
     column.pszText = lc_str.name;
     ListView_InsertColumn(hwndList, COLUMN_NAME_IDX, &column);
 
-    column.cx = 100;
+    column.cx = 85;
     column.pszText = lc_str.type;
     ListView_InsertColumn(hwndList, COLUMN_TYPE_IDX, &column);
 
-    column.cx = 60;
+    column.cx = 65;
     column.pszText = lc_str.size;
     ListView_InsertColumn(hwndList, COLUMN_SIZE_IDX, &column);
 
-    column.cx = 100;
+    column.cx = 95;
     column.pszText = lc_str.date;
     ListView_InsertColumn(hwndList, COLUMN_DATE_IDX, &column);
 }
@@ -834,8 +862,9 @@ static HWND createOneContentView() {
     OrigWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)ContentViewWndProc);
     SendMessage(hwnd, WM_SETFONT, (WPARAM)getUIFont(), TRUE);
     // Modern list behaviour: full-row selection, flicker-free scrolling, tidy label tips.
+    // NOTE: do NOT SetWindowTheme("Explorer") here — under the dark container theme it forces
+    // a light header band that renders the column titles unreadable.
     ListView_SetExtendedListViewStyle(hwnd, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
-    SetWindowTheme(hwnd, L"Explorer", NULL);
     createLVColumns(hwnd);
     UpdateWindow(hwnd);
     return hwnd;
@@ -860,6 +889,9 @@ void createContentView() {
 
     for (int i = 0; i < NUM_PANES; i++) {
         panes[i].hwndList = createOneContentView();
+        panes[i].hwndPathLabel = CreateWindowEx(0, WC_STATIC, L"", WS_CHILD | WS_CLIPSIBLINGS | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE | SS_NOTIFY,
+                                                0, 0, 0, 0, hwndMain, (HMENU)NULL, globalHInstance, NULL);
+        SendMessage(panes[i].hwndPathLabel, WM_SETFONT, (WPARAM)getUIFont(), TRUE);
         panes[i].currPath = NULL;
         panes[i].items = NULL;
         panes[i].numItems = 0;
@@ -869,8 +901,10 @@ void createContentView() {
         panes[i].searchData = NULL;
     }
 
-    // Pane 1 starts hidden until split view is enabled.
+    // Pane 1 + both path bars start hidden until split view is enabled.
     ShowWindow(panes[1].hwndList, SW_HIDE);
+    ShowWindow(panes[0].hwndPathLabel, SW_HIDE);
+    ShowWindow(panes[1].hwndPathLabel, SW_HIDE);
     activeIdx = 0;
 }
 
@@ -900,6 +934,7 @@ static void cvSetActiveByHwnd(HWND h) {
     updateAddrButtons();
     updateStatusbar(activePane());
     cvInvalidatePaneFrames();
+    for (int i = 0; i < NUM_PANES; i++) InvalidateRect(panes[i].hwndPathLabel, NULL, TRUE);
 }
 
 void cvToggleSplit() {
@@ -907,9 +942,12 @@ void cvToggleSplit() {
 
     if (splitOn) {
         ShowWindow(panes[1].hwndList, SW_SHOW);
+        ShowWindow(panes[0].hwndPathLabel, SW_SHOW);
+        ShowWindow(panes[1].hwndPathLabel, SW_SHOW);
         // Populate pane 1 (it was never refreshed while hidden).
         buildChildNodes(panes[1].currPath, false);
         refreshPane(&panes[1]);
+        updatePaneLabel(&panes[0]);
     }
     else {
         // Collapsing: make pane 0 active and hide pane 1.
@@ -922,6 +960,8 @@ void cvToggleSplit() {
             updateStatusbar(activePane());
         }
         ShowWindow(panes[1].hwndList, SW_HIDE);
+        ShowWindow(panes[0].hwndPathLabel, SW_HIDE);
+        ShowWindow(panes[1].hwndPathLabel, SW_HIDE);
     }
 
     resizeControls();
@@ -1267,6 +1307,7 @@ static void refreshPane(struct Pane* p) {
     ListView_SetItemCountEx(p->hwndList, p->numItems, 0);
 
     updateStatusbar(p);
+    updatePaneLabel(p);
 }
 
 void refreshContentView() {

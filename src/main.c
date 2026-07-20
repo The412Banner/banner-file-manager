@@ -18,6 +18,8 @@ struct LC_STR lc_str = {0};
 #define PANE_FRAME 2
 static RECT paneCell[2] = {0};
 static HMENU hViewMenu = NULL;
+static HBRUSH paneLabelActiveBrush = NULL;
+static HBRUSH paneLabelInactiveBrush = NULL;
 
 void cvInvalidatePaneFrames(void) {
     for (int i = 0; i < 2; i++) InvalidateRect(hwndMain, &paneCell[i], TRUE);
@@ -162,10 +164,16 @@ void resizeControls() {
     }
 
     int nPanes = split ? 2 : 1;
+    int labelH = split ? 20 : 0;
     for (int i = 0; i < nPanes; i++) {
         RECT c = paneCell[i];
-        SetWindowPos(cvPaneHwnd(i), NULL, c.left + inset, c.top + inset,
-                     (c.right - c.left) - 2 * inset, (c.bottom - c.top) - 2 * inset, SWP_NOZORDER);
+        int x = c.left + inset, y = c.top + inset;
+        int w = (c.right - c.left) - 2 * inset;
+        int h = (c.bottom - c.top) - 2 * inset;
+        if (split) {
+            SetWindowPos(cvPaneLabel(i), NULL, x, y, w, labelH, SWP_NOZORDER);
+        }
+        SetWindowPos(cvPaneHwnd(i), NULL, x, y + labelH, w, h - labelH, SWP_NOZORDER);
     }
 }
 
@@ -191,13 +199,32 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             EndPaint(hwnd, &ps);
             break;
         }
+        case WM_CTLCOLORSTATIC: {
+            HWND ctl = (HWND)lParam;
+            for (int i = 0; i < 2; i++) {
+                if (ctl == cvPaneLabel(i)) {
+                    if (!paneLabelActiveBrush) paneLabelActiveBrush = CreateSolidBrush(RGB(0, 120, 215));
+                    if (!paneLabelInactiveBrush) paneLabelInactiveBrush = CreateSolidBrush(RGB(60, 60, 60));
+                    HDC hdc = (HDC)wParam;
+                    bool active = (i == cvActiveIdx());
+                    SetBkMode(hdc, OPAQUE);
+                    SetTextColor(hdc, active ? RGB(255, 255, 255) : RGB(200, 200, 200));
+                    SetBkColor(hdc, active ? RGB(0, 120, 215) : RGB(60, 60, 60));
+                    return (LRESULT)(active ? paneLabelActiveBrush : paneLabelInactiveBrush);
+                }
+            }
+            break;
+        }
         case WM_COMMAND: {
             if (lParam == 0 && HIWORD(wParam) == 0) {
                 mainMenuCommand(wParam);
                 return 0;
             }
             else if ((HWND)lParam == hwndToolbar) {
-                toolbarCommand(LOWORD(wParam));         
+                toolbarCommand(LOWORD(wParam));
+            }
+            else if (HIWORD(wParam) == STN_CLICKED && cvActivatePaneByLabel((HWND)lParam)) {
+                return 0;
             }
             break;
         }
