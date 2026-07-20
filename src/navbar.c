@@ -36,6 +36,13 @@ extern HWND hwndMain;
 
 HWND hwndNavbar = NULL;
 
+// Dark background for the search field (Wine would otherwise render it white).
+static HBRUSH searchBgBrush = NULL;
+static HBRUSH getSearchBgBrush() {
+    if (!searchBgBrush) searchBgBrush = CreateSolidBrush(RGB(45, 45, 45));
+    return searchBgBrush;
+}
+
 static void createMorePopupMenu(struct FileNode* parent) {  
     HMENU menu = CreatePopupMenu();
 
@@ -127,7 +134,7 @@ LRESULT CALLBACK NavbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 return (LRESULT)(isEditMode ? GetSysColorBrush(COLOR_WINDOW) : GetSysColorBrush(COLOR_BTNFACE));
             }
             else if (hwndControl == hwndSearchEditWrapper) {
-                return (LRESULT)GetStockObject(WHITE_BRUSH);
+                return (LRESULT)getSearchBgBrush();
             }
             break;
         }
@@ -219,8 +226,9 @@ LRESULT CALLBACK SearchEditWrapperWndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
     if (msg == WM_CTLCOLOREDIT) {
         HWND hwndControl = (HWND)lParam;
         if (hwndControl == hwndSearchEdit) {
-            SetTextColor((HDC)wParam, searchEditEmpty ? RGB(128, 128, 128) : RGB(0, 0, 0));
-            return (LRESULT)((HBRUSH)GetStockObject(WHITE_BRUSH));
+            SetTextColor((HDC)wParam, searchEditEmpty ? RGB(150, 150, 150) : RGB(230, 230, 230));
+            SetBkColor((HDC)wParam, RGB(45, 45, 45));
+            return (LRESULT)getSearchBgBrush();
         }
     }
     return SearchEditWrapperOrigWndProc(hwnd, msg, wParam, lParam);
