@@ -145,10 +145,21 @@ LRESULT treeviewNotify(NMHDR* nmhdr) {
     return 0;   
 }
 
+// The tree view is not otherwise subclassed; this exists only so its non-client
+// scrollbars can be repainted dark (Wine draws them light — see themePaintScrollbars).
+static WNDPROC OrigTreeviewProc = NULL;
+
+static LRESULT CALLBACK TreeviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    LRESULT result = CallWindowProc(OrigTreeviewProc, hwnd, msg, wParam, lParam);
+    if (themeScrollbarsNeedRepaint(msg)) themePaintScrollbars(hwnd);
+    return result;
+}
+
 void createTreeview() {
     hwndTreeview = CreateWindowEx(0, WC_TREEVIEW, NULL, WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS |                              TVS_SHOWSELALWAYS, 0, 0, 0, 0, hwndMain, (HMENU)NULL, globalHInstance, NULL);
 
     SendMessage(hwndTreeview, WM_SETFONT, (WPARAM)getUIFont(), TRUE);
+    OrigTreeviewProc = (WNDPROC)SetWindowLongPtr(hwndTreeview, GWLP_WNDPROC, (LONG_PTR)TreeviewWndProc);
 
     updateTreeItems();
     UpdateWindow(hwndTreeview);

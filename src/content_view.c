@@ -330,7 +330,10 @@ LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             break;
         }
     }
-    return OrigWndProc(hwnd, msg, wParam, lParam);
+    LRESULT result = OrigWndProc(hwnd, msg, wParam, lParam);
+    // Wine draws the list view's own scrollbars light; repaint them dark on top.
+    if (themeScrollbarsNeedRepaint(msg)) themePaintScrollbars(hwnd);
+    return result;
 }
 
 void updateSelectedItems() {

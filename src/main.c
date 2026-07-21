@@ -41,6 +41,179 @@ COLORREF themeFieldBg(void)   { return isDarkMode() ? RGB(45, 45, 45)    : GetSy
 COLORREF themeFieldText(void) { return isDarkMode() ? RGB(230, 230, 230) : GetSysColor(COLOR_WINDOWTEXT); }
 COLORREF themePlaceholder(void){ return isDarkMode() ? RGB(150, 150, 150) : GetSysColor(COLOR_GRAYTEXT); }
 
+// --- Dark non-client scrollbars -------------------------------------------------------
+// Wine paints a window's own (non-client) scrollbars with the classic light 3D look no
+// matter what the container theme is, so every list view / tree view ends up with a white
+// bar down its right edge and across its bottom. There is no message to recolour them
+// (WM_CTLCOLORSCROLLBAR only applies to standalone scrollbar controls), so we repaint them
+// ourselves over the window DC — the same owner-draw approach used for the column header,
+// status bar and navbar buttons. Light mode is left to the system.
+#define SB_TROUGH_DARK RGB(38, 38, 38)
+#define SB_THUMB_DARK  RGB(95, 95, 95)
+#define SB_ARROW_DARK  RGB(205, 205, 205)
+
+enum { SB_ARROW_UP, SB_ARROW_DOWN, SB_ARROW_LEFT, SB_ARROW_RIGHT };
+
+static void fillRect(HDC hdc, const RECT* rc, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    FillRect(hdc, (RECT*)rc, brush);
+    DeleteObject(brush);
+}
+
+static void drawScrollArrow(HDC hdc, const RECT* rc, int dir, COLORREF color) {
+    int cx = (rc->left + rc->right) / 2;
+    int cy = (rc->top + rc->bottom) / 2;
+    int w = rc->right - rc->left, h = rc->bottom - rc->top;
+    int s = ((w < h ? w : h) / 5);
+    if (s < 2) s = 2;
+
+    POINT p[3];
+    switch (dir) {
+        case SB_ARROW_UP:    p[0] = (POINT){cx, cy - s}; p[1] = (POINT){cx - s, cy + s}; p[2] = (POINT){cx + s, cy + s}; break;
+        case SB_ARROW_DOWN:  p[0] = (POINT){cx, cy + s}; p[1] = (POINT){cx - s, cy - s}; p[2] = (POINT){cx + s, cy - s}; break;
+        case SB_ARROW_LEFT:  p[0] = (POINT){cx - s, cy}; p[1] = (POINT){cx + s, cy - s}; p[2] = (POINT){cx + s, cy + s}; break;
+        default:             p[0] = (POINT){cx + s, cy}; p[1] = (POINT){cx - s, cy - s}; p[2] = (POINT){cx - s, cy + s}; break;
+    }
+
+    HBRUSH brush = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldBrush = SelectObject(hdc, brush);
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    Polygon(hdc, p, 3);
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+// Paints one scrollbar dark. Returns its rect (in window coords) via `out` so the caller can
+// fill the corner square where a horizontal and a vertical bar meet.
+static void paintOneScrollbar(HWND hwnd, HDC hdc, POINT org, LONG objid, bool vertical, RECT* out) {
+    SCROLLBARINFO sbi = {0};
+    sbi.cbSize = sizeof(SCROLLBARINFO);
+    if (!GetScrollBarInfo(hwnd, objid, &sbi)) return;
+    if (sbi.rgstate[0] & STATE_SYSTEM_INVISIBLE) return;
+
+    RECT rc = sbi.rcScrollBar;              // screen coords -> window coords
+    OffsetRect(&rc, -org.x, -org.y);
+    if (IsRectEmpty(&rc)) return;
+
+    fillRect(hdc, &rc, SB_TROUGH_DARK);
+
+    int btn = sbi.dxyLineButton;
+    int extent = vertical ? (rc.bottom - rc.top) : (rc.right - rc.left);
+    if (btn * 2 > extent) btn = extent / 2;
+
+    // Arrow buttons at each end.
+    if (btn > 0) {
+        RECT a = rc, b = rc;
+        if (vertical) { a.bottom = a.top + btn; b.top = b.bottom - btn; }
+        else          { a.right = a.left + btn; b.left = b.right - btn; }
+        drawScrollArrow(hdc, &a, vertical ? SB_ARROW_UP : SB_ARROW_LEFT, SB_ARROW_DARK);
+        drawScrollArrow(hdc, &b, vertical ? SB_ARROW_DOWN : SB_ARROW_RIGHT, SB_ARROW_DARK);
+    }
+
+    // Thumb. xyThumbTop/Bottom are offsets from the start of rcScrollBar; if Wine reports
+    // nothing usable, fall back to computing it from the scroll range.
+    int thumbStart = sbi.xyThumbTop, thumbEnd = sbi.xyThumbBottom;
+    if (thumbEnd <= thumbStart) {
+        SCROLLINFO si = {0};
+        si.cbSize = sizeof(SCROLLINFO);
+        si.fMask = SIF_ALL;
+        if (GetScrollInfo(hwnd, vertical ? SB_VERT : SB_HORZ, &si) && si.nMax > si.nMin) {
+            int range = si.nMax - si.nMin + 1;
+            int track = extent - btn * 2;
+            int page = si.nPage > 0 ? (int)si.nPage : 1;
+            int size = (int)((double)track * page / range);
+            if (size < 12) size = 12;
+            if (size > track) size = track;
+            int span = range - page;
+            int offset = span > 0 ? (int)((double)(track - size) * (si.nPos - si.nMin) / span) : 0;
+            thumbStart = btn + offset;
+            thumbEnd = thumbStart + size;
+        }
+    }
+
+    if (thumbEnd > thumbStart) {
+        RECT t = rc;
+        if (vertical) { t.top = rc.top + thumbStart; t.bottom = rc.top + thumbEnd; t.left += 1; t.right -= 1; }
+        else          { t.left = rc.left + thumbStart; t.right = rc.left + thumbEnd; t.top += 1; t.bottom -= 1; }
+        IntersectRect(&t, &t, &rc);
+        if (!IsRectEmpty(&t)) fillRect(hdc, &t, SB_THUMB_DARK);
+    }
+
+    *out = rc;
+}
+
+void themePaintScrollbars(HWND hwnd) {
+    if (!isDarkMode()) return;
+
+    LONG style = GetWindowLong(hwnd, GWL_STYLE);
+    bool hasV = (style & WS_VSCROLL) != 0;
+    bool hasH = (style & WS_HSCROLL) != 0;
+    if (!hasV && !hasH) return;
+
+    HDC hdc = GetWindowDC(hwnd);
+    if (!hdc) return;
+
+    RECT wr;
+    GetWindowRect(hwnd, &wr);
+    POINT org = {wr.left, wr.top};
+
+    RECT vrc = {0}, hrc = {0};
+    if (hasV) paintOneScrollbar(hwnd, hdc, org, OBJID_VSCROLL, true, &vrc);
+    if (hasH) paintOneScrollbar(hwnd, hdc, org, OBJID_HSCROLL, false, &hrc);
+
+    // The dead square where the two bars meet is drawn light by Wine as well.
+    if (!IsRectEmpty(&vrc) && !IsRectEmpty(&hrc)) {
+        RECT corner = {vrc.left, hrc.top, vrc.right, hrc.bottom};
+        fillRect(hdc, &corner, SB_TROUGH_DARK);
+    }
+
+    ReleaseDC(hwnd, hdc);
+}
+
+// Wine redraws the scrollbars from inside the control's own handling (SetScrollInfo draws
+// immediately, drag tracking runs a modal loop), so repainting on WM_NCPAINT alone is not
+// enough — subclasses call themePaintScrollbars() after the original proc for any message
+// that can move or resize a bar. Kept to a whitelist so hot query messages don't repaint.
+bool themeScrollbarsNeedRepaint(UINT msg) {
+    switch (msg) {
+        case WM_NCPAINT:
+        case WM_PAINT:
+        case WM_SIZE:
+        case WM_VSCROLL:
+        case WM_HSCROLL:
+        case WM_MOUSEWHEEL:
+        case WM_KEYDOWN:
+        case WM_LBUTTONDOWN:
+        case WM_NCLBUTTONDOWN:
+        case WM_NCLBUTTONUP:
+        case WM_NCMOUSEMOVE:
+        case WM_NCMOUSELEAVE:
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+        case WM_STYLECHANGED:
+        case WM_SYSCOLORCHANGE:
+        case LVM_SETITEMCOUNT:
+        case LVM_DELETEALLITEMS:
+        case LVM_INSERTITEM:
+        case LVM_DELETEITEM:
+        case LVM_SETCOLUMNWIDTH:
+        case LVM_ENSUREVISIBLE:
+        case LVM_SCROLL:
+        case LVM_REDRAWITEMS:
+        case LVM_UPDATE:
+        case TVM_EXPAND:
+        case TVM_INSERTITEM:
+        case TVM_DELETEITEM:
+        case TVM_SELECTITEM:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Shared modern UI font (Segoe UI). Larger than the classic GUI font so rows are
 // taller and easier to hit on a touchscreen, and reads more like Windows 11.
 static HFONT uiFont = NULL;

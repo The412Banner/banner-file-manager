@@ -74,5 +74,7 @@ COLORREF themeFaceLine(void);
 COLORREF themeFieldBg(void);
 COLORREF themeFieldText(void);
 COLORREF themePlaceholder(void);
+void themePaintScrollbars(HWND hwnd);
+bool themeScrollbarsNeedRepaint(UINT msg);
 
 #endif
