@@ -173,10 +173,39 @@ void themePaintScrollbars(HWND hwnd) {
     ReleaseDC(hwnd, hdc);
 }
 
+// While a scrollbar is being used, Wine runs its OWN modal message loop (track_scroll_bar)
+// and repaints the bar light on every mouse move and auto-repeat tick — so a press in the
+// trough stayed white for as long as it was held, because our repaint only ran once the
+// loop returned. That loop does dispatch plain WM_TIMER messages to the window, so we drive
+// a fast repaint timer for exactly as long as the tracking lasts and win the race.
+#define THEME_SB_TIMER_ID 0x7BF1
+#define THEME_SB_TIMER_MS 10
+
+// Called BEFORE the original window proc. Returns true if the message was fully handled.
+bool themeScrollbarsHookBefore(HWND hwnd, UINT msg, WPARAM wParam) {
+    if (msg == WM_TIMER && wParam == THEME_SB_TIMER_ID) {
+        themePaintScrollbars(hwnd);
+        return true;
+    }
+    if ((msg == WM_NCLBUTTONDOWN || msg == WM_NCLBUTTONDBLCLK) && isDarkMode()) {
+        SetTimer(hwnd, THEME_SB_TIMER_ID, THEME_SB_TIMER_MS, NULL);
+    }
+    return false;
+}
+
+// Called AFTER the original window proc (which is where the modal tracking loop returns).
+void themeScrollbarsHookAfter(HWND hwnd, UINT msg) {
+    if (msg == WM_NCLBUTTONDOWN || msg == WM_NCLBUTTONDBLCLK ||
+        msg == WM_NCLBUTTONUP || msg == WM_CAPTURECHANGED) {
+        KillTimer(hwnd, THEME_SB_TIMER_ID);
+    }
+    if (themeScrollbarsNeedRepaint(msg)) themePaintScrollbars(hwnd);
+}
+
 // Wine redraws the scrollbars from inside the control's own handling (SetScrollInfo draws
-// immediately, drag tracking runs a modal loop), so repainting on WM_NCPAINT alone is not
-// enough — subclasses call themePaintScrollbars() after the original proc for any message
-// that can move or resize a bar. Kept to a whitelist so hot query messages don't repaint.
+// immediately), so repainting on WM_NCPAINT alone is not enough — subclasses call
+// themePaintScrollbars() after the original proc for any message that can move or resize a
+// bar. Kept to a whitelist so hot query messages don't repaint.
 bool themeScrollbarsNeedRepaint(UINT msg) {
     switch (msg) {
         case WM_NCPAINT:

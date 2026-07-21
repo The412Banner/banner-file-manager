@@ -76,5 +76,7 @@ COLORREF themeFieldText(void);
 COLORREF themePlaceholder(void);
 void themePaintScrollbars(HWND hwnd);
 bool themeScrollbarsNeedRepaint(UINT msg);
+bool themeScrollbarsHookBefore(HWND hwnd, UINT msg, WPARAM wParam);
+void themeScrollbarsHookAfter(HWND hwnd, UINT msg);
 
 #endif

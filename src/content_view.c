@@ -266,6 +266,7 @@ static void execCommandLine(wchar_t *command) {
 }
 
 LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (themeScrollbarsHookBefore(hwnd, msg, wParam)) return 0;
     switch (msg) {
         case WM_SETFOCUS: {
             cvSetActiveByHwnd(hwnd);
@@ -332,7 +333,7 @@ LRESULT CALLBACK ContentViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
     LRESULT result = OrigWndProc(hwnd, msg, wParam, lParam);
     // Wine draws the list view's own scrollbars light; repaint them dark on top.
-    if (themeScrollbarsNeedRepaint(msg)) themePaintScrollbars(hwnd);
+    themeScrollbarsHookAfter(hwnd, msg);
     return result;
 }
 

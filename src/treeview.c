@@ -150,8 +150,9 @@ LRESULT treeviewNotify(NMHDR* nmhdr) {
 static WNDPROC OrigTreeviewProc = NULL;
 
 static LRESULT CALLBACK TreeviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (themeScrollbarsHookBefore(hwnd, msg, wParam)) return 0;
     LRESULT result = CallWindowProc(OrigTreeviewProc, hwnd, msg, wParam, lParam);
-    if (themeScrollbarsNeedRepaint(msg)) themePaintScrollbars(hwnd);
+    themeScrollbarsHookAfter(hwnd, msg);
     return result;
 }
 
