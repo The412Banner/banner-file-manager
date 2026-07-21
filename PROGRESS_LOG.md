@@ -49,3 +49,22 @@ the split frame. Repaints on `WM_SYSCOLORCHANGE` for runtime theme switches.
 - Vertical scrollbar trough still light in dark mode (Wine scrollbar theming; only on overflow).
 - Open-With could also read the file extension's own associations (OpenWithProgids/List).
 - Optional: fully-editable per-pane address+search bars (currently shared top bar edits active pane).
+
+## Phase 13 — Dark non-client scrollbars (post-1.0.0)
+Branch `fix/dark-scrollbars`, CI green run `29817440567`, build **297984 B**.
+Device screenshots showed white bars under the content list in **both** single and split
+view (and down the right edge) — the last known-light element, previously deferred.
+Cause: Wine paints a window's own (non-client) scrollbars with the classic light 3D look
+regardless of the container theme, and there is no message to recolour them
+(`WM_CTLCOLORSCROLLBAR` only covers standalone scrollbar controls).
+- `main.c`: `themePaintScrollbars(HWND)` repaints a window's scrollbars over its window DC —
+  trough RGB(38,38,38), thumb RGB(95,95,95), owner-drawn arrow glyphs, plus the corner square
+  where a horizontal and a vertical bar meet. Geometry from `GetScrollBarInfo`, with a
+  `GetScrollInfo` fallback if Wine reports no usable thumb. Light mode returns early
+  (system rendering already matches).
+- `themeScrollbarsNeedRepaint(UINT)` whitelist: WM_NCPAINT alone is not enough because Wine
+  draws from inside the control's own handling (`SetScrollInfo` paints immediately) and from
+  the thumb-drag modal loop. Subclasses repaint after layout/scroll/focus messages and a few
+  LVM_/TVM_ messages; hot query messages are excluded so nothing repaints in a loop.
+- `content_view.c` `ContentViewWndProc` and a new thin `TreeviewWndProc` subclass in
+  `treeview.c` (the tree was not subclassed before) call it after the original proc.
