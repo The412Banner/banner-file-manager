@@ -248,7 +248,7 @@ bool themeScrollbarsNeedRepaint(UINT msg) {
 static HFONT uiFont = NULL;
 HFONT getUIFont(void) {
     if (!uiFont) {
-        uiFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        uiFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     }
