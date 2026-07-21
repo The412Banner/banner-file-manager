@@ -57,9 +57,9 @@ buttons included) follows the active theme.
 **Appearance**
 - Segoe UI font, full-row selection, flicker-free (double-buffered) list.
 - **Follows the container's light or dark theme.** Several common controls that Wine
-  renders light regardless of theme (the column header, status bar, search field, and
-  address-bar buttons) are owner-drawn to match the active theme, and re-color on a live
-  theme switch.
+  renders light regardless of theme (the column header, status bar, search field,
+  address-bar buttons, and the list/tree scrollbars) are owner-drawn to match the active
+  theme, and re-color on a live theme switch.
 
 ## Compatibility
 

@@ -68,3 +68,7 @@ regardless of the container theme, and there is no message to recolour them
   LVM_/TVM_ messages; hot query messages are excluded so nothing repaints in a loop.
 - `content_view.c` `ContentViewWndProc` and a new thin `TreeviewWndProc` subclass in
   `treeview.c` (the tree was not subclassed before) call it after the original proc.
+
+### 1.1.0 release
+Phase 13 merged to `main` (fast-forward from `fc2e6aa`). `APP_VERSION` -> **1.1.0**.
+Also in this release: the shared UI font dropped a step (Segoe UI -15 -> -14).
