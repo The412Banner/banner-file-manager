@@ -175,26 +175,67 @@ static void updatePaneLabel(struct Pane* p) {
     SetWindowText(p->hwndPathLabel, label);
 }
 
-static void fillFileInfo(struct FileNode* node, struct ListItem* item) {
-    item->size = 0;
-    memset(&item->modifiedTime, 0, sizeof(FILETIME));
+// ---- icon / type-name caches (large-folder scroll perf) ----------------------------------
+// Resolving an icon + type name goes through SHGetFileInfo, a full shell/registry lookup under
+// Wine. Without caching, a folder of 200 .txt files does 200 identical lookups, redone every time
+// the folder is re-entered. These caches make each distinct extension cost one lookup, persisting
+// across navigation. They are intentionally never cleared. The system-imagelist icon index is the
+// same for large and small views, so a cached index is valid regardless of view style.
 
-    if (node->type == TYPE_FILE) {
-        LARGE_INTEGER filesize;
-        WIN32_FILE_ATTRIBUTE_DATA info = {0};
+static int folderIconCached = 0;
+static int folderIconIndex = 0;
 
-        wchar_t path[MAX_PATH] = {0};
-        getFileNodePath(node, path);
-        GetFileAttributesEx(path, GetFileExInfoStandard, &info);
+#define EXT_ICON_CACHE_SIZE 64
+static struct { wchar_t ext[24]; int icon; wchar_t typeName[64]; } extIconCache[EXT_ICON_CACHE_SIZE];
+static int extIconCacheCount = 0;
 
-        if ((info.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)) {
-            filesize.LowPart = info.nFileSizeLow;
-            filesize.HighPart = info.nFileSizeHigh;
-            item->size = filesize.QuadPart;
+// .exe/.lnk carry per-file embedded icons, so they can't share an extension entry — cache by path.
+#define EXE_ICON_CACHE_SIZE 64
+static struct { wchar_t path[MAX_PATH]; int icon; } exeIconCache[EXE_ICON_CACHE_SIZE];
+static int exeIconCacheCount = 0;
+
+static int findExtIconCache(const wchar_t* ext, const wchar_t** typeNameOut) {
+    if (!ext) return -1;
+    for (int i = 0; i < extIconCacheCount; i++) {
+        if (wcsicmp(extIconCache[i].ext, ext) == 0) {
+            if (typeNameOut) *typeNameOut = extIconCache[i].typeName;
+            return extIconCache[i].icon;
         }
-
-        memcpy(&item->modifiedTime, &info.ftLastWriteTime, sizeof(FILETIME));
     }
+    return -1;
+}
+
+static void addExtIconCache(const wchar_t* ext, int icon, const wchar_t* typeName) {
+    if (!ext || extIconCacheCount >= EXT_ICON_CACHE_SIZE) return;
+    wcsncpy_s(extIconCache[extIconCacheCount].ext, 24, ext, _TRUNCATE);
+    extIconCache[extIconCacheCount].icon = icon;
+    if (typeName) wcsncpy_s(extIconCache[extIconCacheCount].typeName, 64, typeName, _TRUNCATE);
+    else extIconCache[extIconCacheCount].typeName[0] = L'\0';
+    extIconCacheCount++;
+}
+
+static int findExeIconCache(const wchar_t* path) {
+    if (!path) return -1;
+    for (int i = 0; i < exeIconCacheCount; i++) {
+        if (wcsicmp(exeIconCache[i].path, path) == 0) return exeIconCache[i].icon;
+    }
+    return -1;
+}
+
+static void addExeIconCache(const wchar_t* path, int icon) {
+    if (!path || exeIconCacheCount >= EXE_ICON_CACHE_SIZE) return;
+    wcsncpy_s(exeIconCache[exeIconCacheCount].path, MAX_PATH, path, _TRUNCATE);
+    exeIconCache[exeIconCacheCount].icon = icon;
+    exeIconCacheCount++;
+}
+
+// Size + mtime are captured once during enumeration (buildChildNodes) straight out of the
+// WIN32_FIND_DATA, so filling a list item is now a pure copy — no per-file GetFileAttributesEx.
+// This is the key large-folder win: a 5k-file folder no longer does 5k sync stat round-trips
+// through Wine onto FUSE storage at load time.
+static void fillFileInfo(struct FileNode* node, struct ListItem* item) {
+    item->size = node->size;
+    memcpy(&item->modifiedTime, &node->modifiedTime, sizeof(FILETIME));
 }
 
 static void updateStatusbar(struct Pane* p) {
@@ -621,13 +662,57 @@ LRESULT contentViewNotify(NMHDR* nmhdr) {
             struct ListItem* item = &p->items[nmlvdi->item.iItem];
 
             if (!item->loaded) {
-                wchar_t path[MAX_PATH] = {0};
-                getFileNodePath(item->node, path);
+                bool largeIcon = (p->viewStyle == STYLE_LARGE_ICON);
 
-                struct FileInfo fi = {0};
-                getFileInfo(path, item->node->type, p->viewStyle == STYLE_LARGE_ICON, &fi);
+                if (item->node->type == TYPE_DIR) {
+                    // Every folder shares one system icon — resolve it a single time.
+                    if (!folderIconCached) {
+                        wchar_t path[MAX_PATH] = {0};
+                        getFileNodePath(item->node, path);
+                        struct FileInfo fi = {0};
+                        getFileInfo(path, TYPE_DIR, largeIcon, &fi);
+                        folderIconIndex = fi.icon;
+                        folderIconCached = 1;
+                    }
+                    item->icon = folderIconIndex;
+                    wcscpy_s(item->type, 64, lc_str.folder);
+                }
+                else if (item->node->type == TYPE_FILE) {
+                    wchar_t* ext = wcsrchr(item->node->name, L'.'); // includes the dot, e.g. ".txt"
+                    bool isExeOrLnk = ext && (wcsicmp(ext, L".exe") == 0 || wcsicmp(ext, L".lnk") == 0);
 
-                if (item->node->type == TYPE_FILE) {
+                    if (isExeOrLnk) {
+                        // exe/lnk carry per-file icons: cache by full path, not extension.
+                        wchar_t path[MAX_PATH] = {0};
+                        getFileNodePath(item->node, path);
+                        int cached = findExeIconCache(path);
+                        if (cached >= 0) {
+                            item->icon = cached;
+                        } else {
+                            struct FileInfo fi = {0};
+                            getFileInfo(path, TYPE_FILE, largeIcon, &fi);
+                            item->icon = fi.icon;
+                            addExeIconCache(path, fi.icon);
+                        }
+                        wcscpy_s(item->type, 64, wcsicmp(ext, L".exe") == 0 ? lc_str.application : lc_str.shortcut);
+                    } else {
+                        // Everything else keys off the extension (one shell lookup per distinct ext).
+                        const wchar_t* cachedType = NULL;
+                        int cached = findExtIconCache(ext, &cachedType);
+                        if (cached >= 0) {
+                            item->icon = cached;
+                            wcscpy_s(item->type, 64, (cachedType && cachedType[0]) ? cachedType : lc_str.file);
+                        } else {
+                            wchar_t path[MAX_PATH] = {0};
+                            getFileNodePath(item->node, path);
+                            struct FileInfo fi = {0};
+                            getFileInfo(path, TYPE_FILE, largeIcon, &fi);
+                            item->icon = fi.icon;
+                            wcscpy_s(item->type, 64, fi.typeName);
+                            if (ext) addExtIconCache(ext, fi.icon, fi.typeName);
+                        }
+                    }
+
                     formatFileSize(item->size, item->formattedSize);
 
                     SYSTEMTIME systemTime = {0};
@@ -636,9 +721,16 @@ LRESULT contentViewNotify(NMHDR* nmhdr) {
                         formatModifiedDate(systemTime.wMonth, systemTime.wDay, systemTime.wYear, systemTime.wHour, systemTime.wMinute, item->formattedDate, 32);
                     }
                 }
+                else {
+                    // Drives / desktop / computer / personal — only a handful, not worth caching.
+                    wchar_t path[MAX_PATH] = {0};
+                    getFileNodePath(item->node, path);
+                    struct FileInfo fi = {0};
+                    getFileInfo(path, item->node->type, largeIcon, &fi);
+                    item->icon = fi.icon;
+                    wcscpy_s(item->type, 64, fi.typeName);
+                }
 
-                item->icon = fi.icon;
-                wcscpy_s(item->type, 80, fi.typeName);
                 item->loaded = true;
             }
 
