@@ -72,3 +72,26 @@ regardless of the container theme, and there is no message to recolour them
 ### 1.1.0 release
 Phase 13 merged to `main` (fast-forward from `fc2e6aa`). `APP_VERSION` -> **1.1.0**.
 Also in this release: the shared UI font dropped a step (Segoe UI -15 -> -14).
+
+## 1.2.0 release
+
+Two things merged to `main`, then `APP_VERSION` -> **1.2.0**.
+
+### Large-folder loading & scrolling performance
+Opening and scrolling large folders no longer stalls.
+- `file_node.c`: `buildChildNodes` now captures each file's size and last-write time from
+  the `WIN32_FIND_DATA` the enumeration already returns, storing them on the `FileNode`.
+  `content_view.c` `fillFileInfo` drops from a `GetFileAttributesEx` per file to a plain
+  copy — a folder of N files no longer does N synchronous stat round-trips at load.
+- `content_view.c`: icon + type-name resolution (a full `SHGetFileInfo` shell lookup under
+  Wine) is cached — a resolve-once folder icon, an extension -> (icon, type name) cache, and
+  an exe/lnk path -> icon cache (those carry per-file icons). Filled lazily from
+  `LVN_GETDISPINFO`, kept across navigation, so each distinct extension costs one lookup.
+Both sit under the existing virtual (`LVS_OWNERDATA`) list and the dual-pane `Pane` model.
+
+### Version metadata
+The binary now carries a standard `VS_VERSION_INFO` resource (`res/resource.rc`) — company,
+product, file/product version, and a GPL-3.0 + BrunoSX-origin copyright — with the version
+defined once in `include/resource.h` and shared by the resource and the About dialog. This
+fixes the empty Windows file-properties dialog and clears a reputation/ML antivirus
+false-positive that an unsigned, metadata-less executable was drawing.

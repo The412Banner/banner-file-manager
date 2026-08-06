@@ -48,11 +48,22 @@ buttons included) follows the active theme.
 - Byte-accurate **copy progress bar** with cancel.
 - Status bar shows item count **and total size** of the current folder.
 
+**Performance**
+- **Large folders load and scroll without stalling.** File size and date are taken
+  straight from the directory enumeration instead of stat-ing every file, so a folder of
+  thousands of entries no longer does thousands of sync round-trips at load time.
+- Icon and type-name lookups are **cached per file extension** and persist across
+  navigation, so re-entering a folder (or opening another folder of the same file types)
+  is instant. The list is virtual — only visible rows are ever realized.
+
 **Reliability**
 - Copy / move / delete are implemented directly on Win32 file APIs
   (`CopyFileExW` / `MoveFileExW` / `DeleteFileW` + manual recursion) instead of shell32
   `SHFileOperation`. This sidesteps the Wine `shell32` copy-paste crash seen on Proton
   10.0-4 and enables real byte-level progress + cancel.
+- The binary carries a proper Windows **version resource** (company, product, version),
+  so it shows correct file properties and is no longer flagged by reputation-based
+  antivirus heuristics for missing metadata.
 
 **Appearance**
 - Segoe UI font, full-row selection, flicker-free (double-buffered) list.

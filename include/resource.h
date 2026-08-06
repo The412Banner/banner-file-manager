@@ -60,9 +60,9 @@
 // Version, single source of truth. The numeric parts feed the VERSIONINFO resource
 // (res/resource.rc); APP_VERSION is the wide string shown in the About dialog.
 #define APP_VERSION_MAJOR 1
-#define APP_VERSION_MINOR 1
+#define APP_VERSION_MINOR 2
 #define APP_VERSION_PATCH 0
-#define APP_VERSION_STR "1.1.0"
+#define APP_VERSION_STR "1.2.0"
 
 #define WIDEN_(x) L##x
 #define WIDEN(x) WIDEN_(x)
