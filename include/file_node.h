@@ -10,6 +10,8 @@ struct FileNode {
     struct FileNode* sibling;
     struct FileNode* children;
     bool hasChildDirs;
+    uint64_t size;              // captured from WIN32_FIND_DATA at enumeration (files only)
+    FILETIME modifiedTime;      // captured from WIN32_FIND_DATA at enumeration (files only)
 };
 
 extern bool showHiddenFiles;

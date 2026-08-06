@@ -19,6 +19,8 @@ static struct FileNode* allocFileNode(wchar_t* name, enum FileType type) {
     node->sibling = NULL;
     node->children = NULL;
     node->hasChildDirs = false;
+    node->size = 0;
+    memset(&node->modifiedTime, 0, sizeof(FILETIME));
     return node;
 }
 
@@ -91,11 +93,21 @@ void buildChildNodes(struct FileNode* parent, bool onlyDirs) {
             if (((wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (wfd.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)) &&
                 (showHiddenFiles || !(wfd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN))) {
                 enum FileType type = (wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? TYPE_DIR : TYPE_FILE;
-                
+
                 wchar_t* name = wcsdup(wfd.cFileName);
                 struct FileNode* child = allocFileNode(name, type);
                 child->parent = parent;
-                
+
+                // Size + mtime are already in the enumeration result — capture them here so the
+                // content view never has to stat each file again (fillFileInfo becomes a memcpy).
+                if (type == TYPE_FILE) {
+                    LARGE_INTEGER filesize;
+                    filesize.LowPart = wfd.nFileSizeLow;
+                    filesize.HighPart = wfd.nFileSizeHigh;
+                    child->size = filesize.QuadPart;
+                    memcpy(&child->modifiedTime, &wfd.ftLastWriteTime, sizeof(FILETIME));
+                }
+
                 if (!firstChild) firstChild = child;
                 if (lastChild) lastChild->sibling = child;
                 lastChild = child;              
